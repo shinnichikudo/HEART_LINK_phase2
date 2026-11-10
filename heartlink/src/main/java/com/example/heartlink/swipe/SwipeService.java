@@ -10,6 +10,7 @@ import com.example.heartlink.repository.SwipeRepository;
 import com.example.heartlink.repository.UserRepository;
 import com.example.heartlink.swipe.dto.SwipeRequest;
 import com.example.heartlink.swipe.dto.SwipeResponse;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -31,6 +32,7 @@ public class SwipeService {
         this(users, swipes, matches, new SwipeLockManager(), new SwipeLockMetrics());
     }
 
+    @Autowired
     public SwipeService(UserRepository users, SwipeRepository swipes, MatchService matches,
                         SwipeLockManager lockManager, SwipeLockMetrics lockMetrics) {
         this.users = users;
