@@ -239,6 +239,21 @@ class Phase1ApiTests {
     }
 
     @Test
+    void hotProfileAllowsParallelSwipesFromDifferentUsers() throws Exception {
+        var gate = new CyclicBarrier(2);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var first = pool.submit(() -> { gate.await(5, TimeUnit.SECONDS); return swipes.swipe(b, new SwipeRequest(a, "like")); });
+            var second = pool.submit(() -> { gate.await(5, TimeUnit.SECONDS); return swipes.swipe(c, new SwipeRequest(a, "like")); });
+            SwipeResponse x = first.get(15, TimeUnit.SECONDS);
+            SwipeResponse y = second.get(15, TimeUnit.SECONDS);
+            assertThat(x.matched()).isFalse();
+            assertThat(y.matched()).isFalse();
+        }
+        assertThat(count("swipes")).isEqualTo(2);
+        assertThat(swipes.getLockMetrics().getTotalSwipes()).isGreaterThanOrEqualTo(2);
+    }
+
+    @Test
     void concurrentDuplicateSwipesReturnCreatedAndConflict() throws Exception {
         var gate = new CyclicBarrier(2);
         java.util.concurrent.Callable<Integer> call = () -> {

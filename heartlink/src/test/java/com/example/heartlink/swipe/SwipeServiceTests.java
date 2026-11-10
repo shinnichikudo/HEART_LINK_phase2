@@ -19,9 +19,13 @@ class SwipeServiceTests {
     final UserRepository users = mock(UserRepository.class);
     final SwipeRepository swipes = mock(SwipeRepository.class);
     final MatchService matches = mock(MatchService.class);
-    final SwipeService service = new SwipeService(users, swipes, matches);
+    final SwipeLockManager lockManager = mock(SwipeLockManager.class);
+    final SwipeLockMetrics lockMetrics = new SwipeLockMetrics();
+    final SwipeService service = new SwipeService(users, swipes, matches, lockManager, lockMetrics);
 
     void givenUsers() {
+        when(users.findById(1L)).thenReturn(Optional.of(User.builder().id(1L).build()));
+        when(users.findById(2L)).thenReturn(Optional.of(User.builder().id(2L).build()));
         when(users.findByIdForUpdate(1L)).thenReturn(Optional.of(User.builder().id(1L).build()));
         when(users.findByIdForUpdate(2L)).thenReturn(Optional.of(User.builder().id(2L).build()));
         when(swipes.saveAndFlush(any())).thenAnswer(i -> {
@@ -35,11 +39,12 @@ class SwipeServiceTests {
                 .isInstanceOfSatisfying(ApiException.class, e -> assertThat(e.getCode()).isEqualTo("SELF_SWIPE"));
         assertThatThrownBy(() -> service.swipe(1L, new SwipeRequest(2L, "undo")))
                 .isInstanceOf(ApiException.class);
-        verifyNoInteractions(users, swipes, matches);
+        verifyNoInteractions(users, swipes, matches, lockManager);
     }
 
     @Test
     void missingTargetAndDeletedCallerHaveDifferentErrors() {
+        when(users.findById(1L)).thenReturn(Optional.empty());
         when(users.findByIdForUpdate(1L)).thenReturn(Optional.empty());
         assertThatThrownBy(() -> service.swipe(2L, new SwipeRequest(1L, "like")))
                 .isInstanceOfSatisfying(ApiException.class, e -> assertThat(e.getStatus().value()).isEqualTo(404));
@@ -69,7 +74,7 @@ class SwipeServiceTests {
     }
 
     @Test
-    void reverseLikeCreatesSortedPairAndLocksInAscendingOrder() {
+    void reverseLikeCreatesSortedPairAndAcquiresPairLock() {
         givenUsers();
         when(swipes.existsBySwiperIdAndTargetIdAndAction(1L, 2L, SwipeAction.LIKE)).thenReturn(true);
         when(matches.createForMutualLike(any(), any())).thenAnswer(i -> {
@@ -82,9 +87,65 @@ class SwipeServiceTests {
         var result = service.swipe(2L, new SwipeRequest(1L, "like"));
         assertThat(result.match().id()).isEqualTo(20L);
         assertThat(result.match().withUserId()).isEqualTo(1L);
+
+        // Khóa theo cặp được gọi với pair {2, 1}
+        verify(lockManager).acquirePairLock(2L, 1L);
+        // Không dùng khóa dòng findByIdForUpdate trên User trong chế độ pair lock
+        verify(users, never()).findByIdForUpdate(any());
+        // Người dùng được đọc qua findById thông thường
+        verify(users).findById(1L);
+        verify(users).findById(2L);
+        verify(swipes).existsBySwiperIdAndTargetId(2L, 1L);
+    }
+
+    @Test
+    void rowLockStrategyLocksBothUsersInAscendingOrder() {
+        givenUsers();
+        service.setLockStrategy("row");
+        when(swipes.existsBySwiperIdAndTargetIdAndAction(1L, 2L, SwipeAction.LIKE)).thenReturn(true);
+        when(matches.createForMutualLike(any(), any())).thenAnswer(i -> {
+            User first = i.getArgument(0);
+            User second = i.getArgument(1);
+            return Match.builder().id(20L).userA(first).userB(second).build();
+        });
+
+        var result = service.swipe(2L, new SwipeRequest(1L, "like"));
+        assertThat(result.match().id()).isEqualTo(20L);
+
+        // Ở chế độ "row", khóa dòng User theo thứ tự tăng dần
         var order = inOrder(users, swipes);
         order.verify(users).findByIdForUpdate(1L);
         order.verify(users).findByIdForUpdate(2L);
         order.verify(swipes).existsBySwiperIdAndTargetId(2L, 1L);
+    }
+
+    @Test
+    void lockWaitMetricsRecordsDurationForSwipes() {
+        givenUsers();
+        lockMetrics.reset();
+        assertThat(lockMetrics.getTotalSwipes()).isZero();
+
+        service.swipe(1L, new SwipeRequest(2L, "pass"));
+
+        assertThat(lockMetrics.getTotalSwipes()).isEqualTo(1);
+        assertThat(lockMetrics.getLastLockWaitMillis()).isGreaterThanOrEqualTo(0);
+        assertThat(lockMetrics.getMaxLockWaitMillis()).isGreaterThanOrEqualTo(0);
+    }
+
+    @Test
+    void pairKeySymmetryAndDifferentiation() {
+        // A-B và B-A phải có cùng một pair key (dùng chung khóa)
+        long keyAB = SwipeLockManager.pairKey(1L, 2L);
+        long keyBA = SwipeLockManager.pairKey(2L, 1L);
+        assertThat(keyAB).isEqualTo(keyBA);
+
+        // A-B và A-C phải có pair key khác nhau (xử lý song song, không tranh chấp)
+        long keyAC = SwipeLockManager.pairKey(1L, 3L);
+        assertThat(keyAB).isNotEqualTo(keyAC);
+
+        // B-A và B-C cũng có key khác nhau
+        long keyBC = SwipeLockManager.pairKey(2L, 3L);
+        assertThat(keyAB).isNotEqualTo(keyBC);
+        assertThat(keyAC).isNotEqualTo(keyBC);
     }
 }
