@@ -24,17 +24,20 @@ public class SwipeController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    @Operation(summary = "Quẹt like/pass", description = "Mỗi hồ sơ chỉ quẹt một lần. Hai bên like tạo match ngay trong response.")
+    @Operation(summary = "Quẹt like/pass", description = "Mỗi hồ sơ chỉ quẹt một lần. Hỗ trợ Idempotency-Key để retry an toàn khi mạng chập chờn.")
     @ApiResponses({
-            @ApiResponse(responseCode = "201", description = "Đã lưu lượt quẹt"),
+            @ApiResponse(responseCode = "201", description = "Đã lưu lượt quẹt (hoặc trả lại kết quả đã tạo nếu retry)"),
             @ApiResponse(responseCode = "400", description = "Dữ liệu không hợp lệ hoặc tự quẹt"),
             @ApiResponse(responseCode = "401", description = "Chưa xác thực"),
             @ApiResponse(responseCode = "404", description = "Hồ sơ đích không tồn tại"),
-            @ApiResponse(responseCode = "409", description = "Đã quẹt hồ sơ này")
+            @ApiResponse(responseCode = "409", description = "Đã quẹt hồ sơ này với hành động khác")
     })
     public SwipeResponse swipe(
             @Parameter(hidden = true) @RequestAttribute(CurrentUser.ID) Long userId,
+            @Parameter(description = "Khóa idempotent để gửi lại khi mất mạng", required = false)
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
             @Valid @RequestBody SwipeRequest request) {
-        return service.swipe(userId, request);
+        String key = idempotencyKey != null ? idempotencyKey : request.idempotencyKey();
+        return service.swipe(userId, request, key);
     }
 }

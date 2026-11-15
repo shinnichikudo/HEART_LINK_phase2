@@ -7,5 +7,10 @@ import jakarta.validation.constraints.Positive;
 
 public record SwipeRequest(
         @JsonProperty("target_id") @NotNull @Positive Long targetId,
-        @NotNull @Pattern(regexp = "like|pass") String action) {
+        @NotNull @Pattern(regexp = "like|pass") String action,
+        @JsonProperty("idempotency_key") String idempotencyKey) {
+
+    public SwipeRequest(Long targetId, String action) {
+        this(targetId, action, null);
+    }
 }

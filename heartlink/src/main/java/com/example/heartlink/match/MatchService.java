@@ -52,6 +52,13 @@ public class MatchService {
     }
 
     @Transactional(readOnly = true)
+    public java.util.Optional<Match> findMatchBetween(Long userId1, Long userId2) {
+        Long first = Math.min(userId1, userId2);
+        Long second = Math.max(userId1, userId2);
+        return matchRepository.findByUserAIdAndUserBId(first, second);
+    }
+
+    @Transactional(readOnly = true)
     public MatchPageResponse listActive(Long userId, int limit, long offset) {
         requireUser(userId);
         if (offset > Integer.MAX_VALUE) {
