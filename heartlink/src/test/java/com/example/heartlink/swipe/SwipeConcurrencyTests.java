@@ -98,6 +98,13 @@ class SwipeConcurrencyTests {
             return recordedSwipes.containsKey(swiperId + "->" + targetId);
         });
 
+        when(swipes.findBySwiperIdAndTargetId(anyLong(), anyLong())).thenAnswer(invocation -> {
+            long swiperId = invocation.getArgument(0);
+            long targetId = invocation.getArgument(1);
+            SwipeAction act = recordedSwipes.get(swiperId + "->" + targetId);
+            return act != null ? Optional.of(Swipe.builder().id(500L).action(act).build()) : Optional.empty();
+        });
+
         when(swipes.existsBySwiperIdAndTargetIdAndAction(anyLong(), anyLong(), any())).thenAnswer(invocation -> {
             long swiperId = invocation.getArgument(0);
             long targetId = invocation.getArgument(1);

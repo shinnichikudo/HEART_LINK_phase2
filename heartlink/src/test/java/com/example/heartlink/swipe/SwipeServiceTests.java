@@ -54,13 +54,49 @@ class SwipeServiceTests {
     }
 
     @Test
-    void duplicateSwipeDoesNotOverwriteExistingAction() {
+    void duplicateSwipeWithoutIdempotencyKeyThrowsConflict() {
         givenUsers();
-        when(swipes.existsBySwiperIdAndTargetId(1L, 2L)).thenReturn(true);
-        assertThatThrownBy(() -> service.swipe(1L, new SwipeRequest(2L, "pass")))
+        when(swipes.findBySwiperIdAndTargetId(1L, 2L)).thenReturn(Optional.of(
+                Swipe.builder().id(5L).action(SwipeAction.LIKE).build()));
+
+        // Không có idempotency_key và idempotentReplay=false -> ném 409
+        assertThatThrownBy(() -> service.swipe(1L, new SwipeRequest(2L, "like")))
                 .isInstanceOfSatisfying(ApiException.class, e -> assertThat(e.getStatus().value()).isEqualTo(409));
         verify(swipes, never()).saveAndFlush(any());
         verifyNoInteractions(matches);
+    }
+
+    @Test
+    void idempotentRetryWithKeyReturnsPreviousLikeAndMatchResult() {
+        givenUsers();
+        when(swipes.findBySwiperIdAndTargetId(1L, 2L)).thenReturn(Optional.of(
+                Swipe.builder().id(55L).action(SwipeAction.LIKE).build()));
+        when(matches.findMatchBetween(1L, 2L)).thenReturn(Optional.of(
+                Match.builder().id(88L).build()));
+
+        // Gửi lại cùng action 'like' kèm idempotency_key (giả lập retry khi mất mạng)
+        var result = service.swipe(1L, new SwipeRequest(2L, "like", "idem-uuid-123"));
+
+        assertThat(result.swipeId()).isEqualTo(55L);
+        assertThat(result.matched()).isTrue();
+        assertThat(result.match().id()).isEqualTo(88L);
+        assertThat(result.match().withUserId()).isEqualTo(2L);
+
+        // Không ghi swipe mới hay tạo match mới
+        verify(swipes, never()).saveAndFlush(any());
+        verify(matches, never()).createForMutualLike(any(), any());
+    }
+
+    @Test
+    void idempotentRetryWithConflictingActionThrowsConflict() {
+        givenUsers();
+        when(swipes.findBySwiperIdAndTargetId(1L, 2L)).thenReturn(Optional.of(
+                Swipe.builder().id(55L).action(SwipeAction.LIKE).build()));
+
+        // Trước đó đã 'like', giờ gửi lại 'pass' -> vẫn ném 409 dù có idempotency_key
+        assertThatThrownBy(() -> service.swipe(1L, new SwipeRequest(2L, "pass", "idem-uuid-123")))
+                .isInstanceOfSatisfying(ApiException.class, e -> assertThat(e.getStatus().value()).isEqualTo(409));
+        verify(swipes, never()).saveAndFlush(any());
     }
 
     @Test
@@ -95,7 +131,7 @@ class SwipeServiceTests {
         // Người dùng được đọc qua findById thông thường
         verify(users).findById(1L);
         verify(users).findById(2L);
-        verify(swipes).existsBySwiperIdAndTargetId(2L, 1L);
+        verify(swipes).findBySwiperIdAndTargetId(2L, 1L);
     }
 
     @Test
@@ -116,7 +152,7 @@ class SwipeServiceTests {
         var order = inOrder(users, swipes);
         order.verify(users).findByIdForUpdate(1L);
         order.verify(users).findByIdForUpdate(2L);
-        order.verify(swipes).existsBySwiperIdAndTargetId(2L, 1L);
+        order.verify(swipes).findBySwiperIdAndTargetId(2L, 1L);
     }
 
     @Test
