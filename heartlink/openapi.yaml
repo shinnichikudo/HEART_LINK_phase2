@@ -125,6 +125,21 @@ paths:
     post:
       tags: [Swipes]
       summary: Like or pass a profile; returns a match when likes are mutual
+      description: >-
+        Send an optional Idempotency-Key from the first attempt. Keys are scoped to the authenticated
+        user and retained with the swipe. The same key, target_id and action replay the original 201
+        response, even if a reciprocal like or cancellation changes the match afterwards. This response
+        is a historical result, not the current match status. Reusing the key with a different target_id
+        or action returns 409 IDEMPOTENCY_KEY_REUSED. An existing swipe cannot be replayed using a new
+        key or a key added after the original request (409 ALREADY_SWIPED). Failed transactions do not
+        reserve the key. The optional idempotency_key body field is equivalent to the header; if both
+        are supplied they must match, otherwise the request returns 400 VALIDATION_ERROR.
+      parameters:
+        - in: header
+          name: Idempotency-Key
+          required: false
+          description: 1 to 128 visible ASCII characters without spaces; use a new key for each new swipe.
+          schema: { type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]+$' }
       requestBody:
         required: true
         content:
@@ -135,9 +150,10 @@ paths:
               properties:
                 target_id: { type: integer, format: int64 }
                 action: { type: string, enum: [like, pass] }
+                idempotency_key: { type: string, minLength: 1, maxLength: 128, pattern: '^[!-~]+$' }
       responses:
         '201':
-          description: Swipe recorded
+          description: Swipe recorded, or the original successful result replayed for the same key and payload
           content:
             application/json:
               schema:
@@ -155,7 +171,11 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '409':
+          description: ALREADY_SWIPED, or IDEMPOTENCY_KEY_REUSED for a different target_id or action
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ApiError' }
   /api/v1/matches:
     get:
       tags: [Matches]

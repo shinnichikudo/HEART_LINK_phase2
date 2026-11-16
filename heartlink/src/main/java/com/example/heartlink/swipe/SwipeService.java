@@ -10,20 +10,21 @@ import com.example.heartlink.repository.SwipeRepository;
 import com.example.heartlink.repository.UserRepository;
 import com.example.heartlink.swipe.dto.SwipeRequest;
 import com.example.heartlink.swipe.dto.SwipeResponse;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import org.hibernate.exception.ConstraintViolationException;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Isolation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 @Service
 public class SwipeService {
-    private static final Logger log = LoggerFactory.getLogger(SwipeService.class);
+    private static final Pattern IDEMPOTENCY_KEY = Pattern.compile("[!-~]{1,128}");
 
     private final UserRepository users;
     private final SwipeRepository swipes;
@@ -33,9 +34,6 @@ public class SwipeService {
 
     @Value("${heartlink.swipe.lock-strategy:pair}")
     private String lockStrategy = "pair";
-
-    @Value("${heartlink.swipe.idempotent-replay:false}")
-    private boolean idempotentReplay = false;
 
     @Autowired
     public SwipeService(UserRepository users, SwipeRepository swipes, MatchService matches,
@@ -53,14 +51,6 @@ public class SwipeService {
 
     public String getLockStrategy() {
         return this.lockStrategy;
-    }
-
-    public void setIdempotentReplay(boolean idempotentReplay) {
-        this.idempotentReplay = idempotentReplay;
-    }
-
-    public boolean isIdempotentReplay() {
-        return this.idempotentReplay;
     }
 
     public SwipeLockMetrics getLockMetrics() {
@@ -88,6 +78,16 @@ public class SwipeService {
             throw new ApiException(HttpStatus.BAD_REQUEST, "SELF_SWIPE", "Cannot swipe yourself");
         }
 
+        String key = resolveIdempotencyKey(request.idempotencyKey(), idempotencyKey);
+        SwipeAction action = "like".equals(request.action()) ? SwipeAction.LIKE : SwipeAction.PASS;
+        if (key != null) {
+            // Only committed, complete snapshots are visible. Replays need no pair lock or live match lookup.
+            Optional<Swipe> previous = swipes.findBySwiperIdAndIdempotencyKey(userId, key);
+            if (previous.isPresent()) {
+                return replay(previous.get(), targetId, action);
+            }
+        }
+
         User first;
         User second;
 
@@ -111,41 +111,79 @@ public class SwipeService {
         User swiper = first.getId().equals(userId) ? first : second;
         User target = first.getId().equals(targetId) ? first : second;
 
-        SwipeAction action = "like".equals(request.action()) ? SwipeAction.LIKE : SwipeAction.PASS;
         Optional<Swipe> existingOpt = swipes.findBySwiperIdAndTargetId(userId, targetId);
 
         if (existingOpt.isPresent()) {
             Swipe existing = existingOpt.get();
-            boolean isIdempotentRetry = (idempotencyKey != null && !idempotencyKey.isBlank())
-                    || idempotentReplay;
-
-            // Xử lý mất phản hồi mạng (Idempotent retry):
-            // Nếu có idempotencyKey (hoặc bật idempotentReplay) và cùng một hành động quẹt,
-            // trả về đúng kết quả lượt thích trước đó thay vì báo lỗi 409, không tạo thêm swipe hay match trùng lặp.
-            if (isIdempotentRetry && existing.getAction() == action) {
-                log.info("Idempotent swipe retry: user={} target={} action={}", userId, targetId, action);
-                SwipeResponse.MatchInfo matchInfo = null;
-                if (action == SwipeAction.LIKE) {
-                    Optional<Match> matchOpt = matches.findMatchBetween(userId, targetId);
-                    if (matchOpt.isPresent()) {
-                        matchInfo = new SwipeResponse.MatchInfo(matchOpt.get().getId(), targetId);
-                    }
-                }
-                return new SwipeResponse(existing.getId(), matchInfo != null, matchInfo);
+            // Another request may have committed while this request waited for the pair lock.
+            if (key != null && key.equals(existing.getIdempotencyKey())) {
+                return replay(existing, targetId, action);
             }
 
             throw new ApiException(HttpStatus.CONFLICT, "ALREADY_SWIPED", "You have already swiped this user");
         }
 
-        Swipe swipe = swipes.saveAndFlush(Swipe.builder().swiper(swiper).target(target).action(action).build());
+        Swipe swipe;
+        try {
+            swipe = swipes.saveAndFlush(Swipe.builder().swiper(swiper).target(target)
+                    .action(action).idempotencyKey(key).build());
+        } catch (DataIntegrityViolationException exception) {
+            // Different pairs have different locks. The unique constraint resolves concurrent key reuse
+            // across those pairs; propagate an API conflict and roll back without querying the aborted transaction.
+            if (key != null && isIdempotencyKeyConflict(exception)) {
+                throw idempotencyKeyReused();
+            }
+            throw exception;
+        }
 
         SwipeResponse.MatchInfo matchInfo = null;
         if (action == SwipeAction.LIKE
                 && swipes.existsBySwiperIdAndTargetIdAndAction(targetId, userId, SwipeAction.LIKE)) {
             Match match = matches.createForMutualLike(first, second);
             matchInfo = new SwipeResponse.MatchInfo(match.getId(), targetId);
+            if (key != null) {
+                // The managed entity is flushed with the match and notifications at transaction commit.
+                swipe.setResponseMatchId(match.getId());
+            }
         }
         return new SwipeResponse(swipe.getId(), matchInfo != null, matchInfo);
+    }
+
+    private static String resolveIdempotencyKey(String bodyKey, String headerKey) {
+        if (bodyKey != null && headerKey != null && !bodyKey.equals(headerKey)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR",
+                    "Idempotency-Key header and idempotency_key body must match");
+        }
+        String key = headerKey != null ? headerKey : bodyKey;
+        if (key != null && !IDEMPOTENCY_KEY.matcher(key).matches()) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR",
+                    "Idempotency key must contain 1 to 128 visible ASCII characters without spaces");
+        }
+        return key;
+    }
+
+    private static SwipeResponse replay(Swipe swipe, Long targetId, SwipeAction action) {
+        if (!swipe.getTarget().getId().equals(targetId) || swipe.getAction() != action) {
+            throw idempotencyKeyReused();
+        }
+        Long matchId = swipe.getResponseMatchId();
+        var match = matchId == null ? null : new SwipeResponse.MatchInfo(matchId, targetId);
+        return new SwipeResponse(swipe.getId(), match != null, match);
+    }
+
+    private static boolean isIdempotencyKeyConflict(Throwable exception) {
+        for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
+            if (cause instanceof ConstraintViolationException violation
+                    && "uq_swipe_idempotency_key".equals(violation.getConstraintName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static ApiException idempotencyKeyReused() {
+        return new ApiException(HttpStatus.CONFLICT, "IDEMPOTENCY_KEY_REUSED",
+                "This idempotency key has already been used for a different swipe request");
     }
 
     private User lockUserRow(Long id, Long currentUserId) {

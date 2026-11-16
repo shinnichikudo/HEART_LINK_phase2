@@ -11,6 +11,8 @@ import com.example.heartlink.swipe.dto.SwipeResponse;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
@@ -230,6 +232,128 @@ class Phase1ApiTests {
     }
 
     @Test
+    void keyedRetryKeepsOriginalUnmatchedResponseAfterAReciprocalLike() throws Exception {
+        String original = keyedSwipe(a, b, "like", "before-match").andExpect(status().isCreated())
+                .andExpect(jsonPath("$.matched").value(false)).andReturn().getResponse().getContentAsString();
+
+        assertThat(swipes.swipe(b, new SwipeRequest(a, "like")).matched()).isTrue();
+
+        keyedSwipe(a, b, "like", "before-match").andExpect(status().isCreated())
+                .andExpect(content().string(original));
+        assertThat(count("swipes")).isEqualTo(2);
+        assertThat(count("matches")).isEqualTo(1);
+        assertThat(count("notifications")).isEqualTo(2);
+    }
+
+    @Test
+    void keyedRetryKeepsOriginalMatchResponseAfterCancellation() throws Exception {
+        swipes.swipe(b, new SwipeRequest(a, "like"));
+        String original = keyedSwipe(a, b, "like", "created-match").andExpect(status().isCreated())
+                .andExpect(jsonPath("$.matched").value(true)).andReturn().getResponse().getContentAsString();
+        Long matchId = jdbc.queryForObject("select id from matches", Long.class);
+        assertThat(jdbc.queryForObject("select response_match_id from swipes where swiper_id = ?",
+                Long.class, a)).isEqualTo(matchId);
+
+        mvc.perform(delete("/api/v1/matches/" + matchId).header("Authorization", auth(a)))
+                .andExpect(status().isNoContent());
+
+        keyedSwipe(a, b, "like", "created-match").andExpect(status().isCreated())
+                .andExpect(content().string(original));
+        assertThat(jdbc.queryForObject("select status from matches", String.class)).isEqualTo("CANCELLED");
+        assertThat(count("swipes")).isEqualTo(2);
+        assertThat(count("notifications")).isEqualTo(2);
+    }
+
+    @Test
+    void keyReuseRequiresTheSameTargetAndAction() throws Exception {
+        keyedSwipe(a, b, "like", "fixed-request").andExpect(status().isCreated());
+
+        keyedSwipe(a, c, "like", "fixed-request").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("IDEMPOTENCY_KEY_REUSED"));
+        keyedSwipe(a, b, "pass", "fixed-request").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("IDEMPOTENCY_KEY_REUSED"));
+        keyedSwipe(a, b, "like", "another-key").andExpect(status().isConflict())
+                .andExpect(jsonPath("$.error.code").value("ALREADY_SWIPED"));
+        assertThat(count("swipes")).isEqualTo(1);
+    }
+
+    @Test
+    void bodyKeysWorkAndTheSameKeyIsIndependentForDifferentUsers() throws Exception {
+        keyedSwipe(a, b, "like", "shared-key").andExpect(status().isCreated());
+        mvc.perform(post("/api/v1/swipes").header("Authorization", auth(b))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"target_id\":" + a + ",\"action\":\"like\",\"idempotency_key\":\"shared-key\"}"))
+                .andExpect(status().isCreated()).andExpect(jsonPath("$.matched").value(true));
+        assertThat(count("swipes")).isEqualTo(2);
+        assertThat(count("matches")).isEqualTo(1);
+        assertThat(count("notifications")).isEqualTo(2);
+    }
+
+    @Test
+    void validatesHeaderAndBodyKeys() throws Exception {
+        for (String key : new String[]{"", "has space", "k".repeat(129)}) {
+            keyedSwipe(a, b, "like", key).andExpect(status().isBadRequest())
+                    .andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+            mvc.perform(post("/api/v1/swipes").header("Authorization", auth(a))
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content("{\"target_id\":" + b + ",\"action\":\"like\",\"idempotency_key\":\"" + key + "\"}"))
+                    .andExpect(status().isBadRequest());
+        }
+        mvc.perform(post("/api/v1/swipes").header("Authorization", auth(a))
+                        .header("Idempotency-Key", "header-key").contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"target_id\":" + b + ",\"action\":\"like\",\"idempotency_key\":\"body-key\"}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+        assertThat(count("swipes")).isZero();
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void concurrentIdenticalKeysReturnTheSameOriginalResponse(boolean incomingLike) throws Exception {
+        if (incomingLike) {
+            swipes.swipe(b, new SwipeRequest(a, "like"));
+        }
+        var gate = new CyclicBarrier(2);
+        java.util.concurrent.Callable<SwipeResponse> request = () -> {
+            gate.await(5, TimeUnit.SECONDS);
+            return swipes.swipe(a, new SwipeRequest(b, "like", "concurrent-key"));
+        };
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var first = pool.submit(request);
+            var second = pool.submit(request);
+            assertThat(first.get(15, TimeUnit.SECONDS)).isEqualTo(second.get(15, TimeUnit.SECONDS));
+        }
+        assertThat(count("swipes")).isEqualTo(incomingLike ? 2 : 1);
+        assertThat(count("matches")).isEqualTo(incomingLike ? 1 : 0);
+        assertThat(count("notifications")).isEqualTo(incomingLike ? 2 : 0);
+    }
+
+    @Test
+    void concurrentKeyReuseAcrossDifferentPairsCreatesOnlyOneNewSwipeAndMatch() throws Exception {
+        swipes.swipe(b, new SwipeRequest(a, "like"));
+        swipes.swipe(c, new SwipeRequest(a, "like"));
+        var gate = new CyclicBarrier(2);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var first = pool.submit(() -> concurrentKeyedSwipe(gate, b));
+            var second = pool.submit(() -> concurrentKeyedSwipe(gate, c));
+            assertThat(java.util.List.of(first.get(15, TimeUnit.SECONDS), second.get(15, TimeUnit.SECONDS)))
+                    .containsExactlyInAnyOrder("201", "IDEMPOTENCY_KEY_REUSED");
+        }
+        assertThat(count("swipes")).isEqualTo(3);
+        assertThat(count("matches")).isEqualTo(1);
+        assertThat(count("notifications")).isEqualTo(2);
+    }
+
+    private String concurrentKeyedSwipe(CyclicBarrier gate, Long target) throws Exception {
+        gate.await(5, TimeUnit.SECONDS);
+        try {
+            swipes.swipe(a, new SwipeRequest(target, "like", "same-key-different-pairs"));
+            return "201";
+        } catch (ApiException exception) {
+            return exception.getCode();
+        }
+    }
+
+    @Test
     void concurrentReciprocalLikesCreateExactlyOneMatch() throws Exception {
         var gate = new CyclicBarrier(2);
         try (var pool = Executors.newFixedThreadPool(2)) {
@@ -325,7 +449,7 @@ class Phase1ApiTests {
         swipes.swipe(b, new SwipeRequest(a, "like"));
         jdbc.execute("alter table matches add constraint test_reject_match check (id < 0)");
         try {
-            assertThatThrownBy(() -> swipes.swipe(a, new SwipeRequest(b, "like")))
+            assertThatThrownBy(() -> swipes.swipe(a, new SwipeRequest(b, "like", "failed-match")))
                     .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
             assertThat(count("swipes")).isEqualTo(1);
             assertThat(count("matches")).isZero();
@@ -333,6 +457,10 @@ class Phase1ApiTests {
         } finally {
             jdbc.execute("alter table matches drop constraint test_reject_match");
         }
+        assertThat(swipes.swipe(a, new SwipeRequest(b, "like", "failed-match")).matched()).isTrue();
+        assertThat(count("swipes")).isEqualTo(2);
+        assertThat(count("matches")).isEqualTo(1);
+        assertThat(count("notifications")).isEqualTo(2);
     }
 
     @Test
@@ -340,7 +468,7 @@ class Phase1ApiTests {
         swipes.swipe(b, new SwipeRequest(a, "like"));
         jdbc.execute("alter table notifications add constraint test_reject_notification check (id < 0)");
         try {
-            assertThatThrownBy(() -> swipes.swipe(a, new SwipeRequest(b, "like")))
+            assertThatThrownBy(() -> swipes.swipe(a, new SwipeRequest(b, "like", "failed-notification")))
                     .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
             assertThat(count("swipes")).isEqualTo(1);
             assertThat(count("matches")).isZero();
@@ -348,6 +476,17 @@ class Phase1ApiTests {
         } finally {
             jdbc.execute("alter table notifications drop constraint test_reject_notification");
         }
+        assertThat(swipes.swipe(a, new SwipeRequest(b, "like", "failed-notification")).matched()).isTrue();
+        assertThat(count("swipes")).isEqualTo(2);
+        assertThat(count("matches")).isEqualTo(1);
+        assertThat(count("notifications")).isEqualTo(2);
+    }
+
+    private org.springframework.test.web.servlet.ResultActions keyedSwipe(Long user, Long target, String action, String key)
+            throws Exception {
+        return mvc.perform(post("/api/v1/swipes").header("Authorization", auth(user))
+                .header("Idempotency-Key", key).contentType(MediaType.APPLICATION_JSON)
+                .content("{\"target_id\":" + target + ",\"action\":\"" + action + "\"}"));
     }
 
     private long count(String table) {

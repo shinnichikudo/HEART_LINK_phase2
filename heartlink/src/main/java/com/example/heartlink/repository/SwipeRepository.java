@@ -11,5 +11,7 @@ public interface SwipeRepository extends JpaRepository<Swipe, Long> {
 
     Optional<Swipe> findBySwiperIdAndTargetId(Long swiperId, Long targetId);
 
+    Optional<Swipe> findBySwiperIdAndIdempotencyKey(Long swiperId, String idempotencyKey);
+
     boolean existsBySwiperIdAndTargetIdAndAction(Long swiperId, Long targetId, SwipeAction action);
 }

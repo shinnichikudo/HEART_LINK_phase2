@@ -1,5 +1,6 @@
 package com.example.heartlink.swipe;
 
+import com.example.heartlink.common.error.ApiException;
 import com.example.heartlink.entity.Swipe;
 import com.example.heartlink.entity.SwipeAction;
 import com.example.heartlink.entity.User;
@@ -8,10 +9,12 @@ import com.example.heartlink.repository.SwipeRepository;
 import com.example.heartlink.repository.UserRepository;
 import com.example.heartlink.swipe.dto.SwipeRequest;
 import com.example.heartlink.swipe.dto.SwipeResponse;
+import org.hibernate.exception.ConstraintViolationException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.aop.framework.ProxyFactory;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.annotation.AnnotationTransactionAttributeSource;
 import org.springframework.transaction.interceptor.TransactionInterceptor;
@@ -19,6 +22,7 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 
 import javax.sql.DataSource;
 import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -82,7 +86,7 @@ class SwipeTransactionTests {
         var failure = new IllegalStateException("Match creation failed");
         when(matches.createForMutualLike(any(), any())).thenThrow(failure);
 
-        assertThatThrownBy(() -> invoke(threeArguments, "like")).isSameAs(failure);
+        assertThatThrownBy(() -> invoke(threeArguments, "like", "rollback-key")).isSameAs(failure);
 
         verify(swipes).saveAndFlush(any());
         verify(connection).rollback();
@@ -90,9 +94,31 @@ class SwipeTransactionTests {
         assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void bothEntryPointsRollBackOnConcurrentKeyReuse(boolean threeArguments) throws Exception {
+        var failure = new DataIntegrityViolationException("Duplicate key",
+                new ConstraintViolationException("Duplicate key", new SQLException("Duplicate key", "23505"),
+                        "uq_swipe_idempotency_key"));
+        doThrow(failure).when(swipes).saveAndFlush(any());
+
+        assertThatThrownBy(() -> invoke(threeArguments, "like", "conflicting-key"))
+                .isInstanceOfSatisfying(ApiException.class,
+                        exception -> assertThat(exception.getCode()).isEqualTo("IDEMPOTENCY_KEY_REUSED"));
+
+        verify(connection).rollback();
+        verify(connection, never()).commit();
+        verifyNoInteractions(matches);
+        assertThat(TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+    }
+
     private SwipeResponse invoke(boolean threeArguments, String action) {
-        var request = new SwipeRequest(2L, action);
-        return threeArguments ? service.swipe(1L, request, null) : service.swipe(1L, request);
+        return invoke(threeArguments, action, null);
+    }
+
+    private SwipeResponse invoke(boolean threeArguments, String action, String key) {
+        var request = new SwipeRequest(2L, action, threeArguments ? null : key);
+        return threeArguments ? service.swipe(1L, request, key) : service.swipe(1L, request);
     }
 
     private void assertActiveTransaction() {

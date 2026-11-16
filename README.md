@@ -56,6 +56,8 @@ heartlink/
 
 Database có 6 bảng: `users` (tài khoản), `swipes` (like/pass), `matches` (cặp ghép đôi), `messages` (tin nhắn), `notifications` (thông báo), `refresh_tokens` (token đã hash).
 
+Mục 5 của Phase 2 bổ sung hai cột nullable trên `swipes`: `idempotency_key` và `response_match_id`, cùng unique constraint `(swiper_id, idempotency_key)`. Key và kết quả gốc được lưu trong cùng transaction với swipe, match và thông báo; lỗi sẽ rollback cả key. Cấu hình development `ddl-auto=update` cập nhật schema khi khởi động. Các swipe cũ không có key vẫn giữ nguyên dữ liệu và hành vi `409` khi quẹt lại.
+
 Hai yêu cầu kỹ thuật cần giữ khi sửa code:
 
 - **Không lưu dở dang luồng match:** swipe mới, match và hai thông báo cùng nằm trong transaction; lỗi làm rollback thì hoàn tác các thay đổi đó. Mã nguồn hiện mặc định lấy advisory lock theo cặp user, giữ đến khi transaction kết thúc: A–B và B–A dùng chung khóa, còn A–B và A–C dùng khóa khác nhau. Chế độ khóa hai dòng user theo ID tăng dần vẫn được giữ để đối chiếu Phase 1. Sự kiện SSE chỉ được gửi sau khi commit thành công.
@@ -100,6 +102,23 @@ API dùng mã HTTP thông thường: `200/201` khi thành công, `204` khi hủy
 { "error": { "code": "ALREADY_SWIPED", "message": "You have already swiped this user" } }
 ```
 
+Để gửi lại swipe khi mất phản hồi, client tạo key riêng cho mỗi lượt quẹt (ví dụ UUID) và gửi **ngay từ request đầu tiên**:
+
+```http
+POST /api/v1/swipes
+Authorization: Bearer <access_token>
+Idempotency-Key: swipe-request-001
+Content-Type: application/json
+
+{ "target_id": 2, "action": "like" }
+```
+
+- Cùng tài khoản, key, `target_id` và `action`: trả lại `201` với đúng `swipe_id`, `matched` và `match` của lần thành công đầu tiên; không ghi thêm swipe, match hoặc thông báo. Key được giữ cùng bản ghi swipe, không tự hết hạn.
+- Kết quả replay là kết quả tại thời điểm yêu cầu gốc. Nếu lần đầu chưa match rồi đối phương like lại, replay vẫn trả `matched: false`. Nếu lần đầu tạo match rồi match bị hủy, replay vẫn trả thông tin match gốc; dùng `GET /api/v1/matches` để xem match đang hoạt động.
+- Dùng lại key cho `target_id` hoặc `action` khác: `409 IDEMPOTENCY_KEY_REUSED`. Dùng key mới cho hồ sơ đã quẹt, kể cả swipe cũ chưa có key: `409 ALREADY_SWIPED`.
+- Key gồm 1–128 ký tự ASCII hiển thị, không có khoảng trắng. Có thể dùng trường body `idempotency_key` thay header; nếu gửi cả hai thì giá trị phải giống nhau. Key không hợp lệ hoặc hai nguồn khác nhau trả `400 VALIDATION_ERROR`. Các tài khoản khác nhau được dùng cùng giá trị key.
+- Không gửi key: giữ hành vi Phase 1, quẹt lại trả `409 ALREADY_SWIPED`. Cơ chế replay không còn được bật bằng cờ `heartlink.swipe.idempotent-replay`.
+
 Access token mặc định sống 1 giờ, refresh token sống 7 ngày. Database chỉ lưu hash của refresh token; mỗi lần refresh sẽ thu hồi token cũ. Logout thu hồi refresh token được gửi, còn access token đã phát vẫn dùng được tới lúc hết hạn.
 
 ## 5. Cách build, chạy và thử dự án
@@ -142,6 +161,8 @@ Lệnh thường dùng: `docker compose logs -f app` để xem log; `docker comp
 **Các vấn đề đi sau là những vấn đề dễ thấy hơn, đọc để loại người đã thích, quá tải lượt swipe, nhiều tài nguyên cho chat, mất response hoặc là rate-limiting lượt quẹt**
 
 Mục 1 bên dưới mô tả hiện trạng Phase 1. Phần khóa theo cặp đã được triển khai trong mã nguồn hiện tại, chọn bằng `heartlink.swipe.lock-strategy=pair` (mặc định); dùng `row` để chạy lại cơ chế Phase 1. Cả hai cách gọi service swipe đều mở transaction; lỗi lấy khóa được truyền lên để dừng thao tác. `SwipeLockMetrics` đo thời gian thực hiện lời gọi lấy khóa, gồm chi phí SQL và round trip; ở chế độ `pair`, không tính hai truy vấn đọc user sau đó. Đây không phải số đo thuần thời gian chờ khóa bên trong PostgreSQL. Cần benchmark trên cùng dữ liệu và cấu hình trước khi kết luận mức cải thiện.
+
+Mục 5 cũng đã được triển khai theo hợp đồng retry ở phần API: lưu key theo tài khoản, ràng buộc với `target_id`/`action`, và giữ kết quả gốc. Khóa theo cặp xử lý các retry đồng thời cho cùng hồ sơ; unique constraint trên key chặn việc hai request ở hai cặp khác nhau cùng chiếm một key. Các mục trong bảng dưới đây tiếp tục mô tả hạn chế của Phase 1.
 
 
 | Hiện trạng Phase 1 | Hướng cải tiến cần xem xét |
