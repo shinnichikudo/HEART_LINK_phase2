@@ -1,10 +1,10 @@
 package com.example.heartlink.swipe;
 
 import jakarta.persistence.EntityManager;
-import jakarta.persistence.PersistenceContext;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import jakarta.persistence.TransactionRequiredException;
 import org.springframework.stereotype.Component;
+
+import java.util.Objects;
 
 /**
  * Quản lý khóa logic theo cặp (Pair-level Locking) cho luồng quẹt thẻ.
@@ -12,16 +12,10 @@ import org.springframework.stereotype.Component;
  */
 @Component
 public class SwipeLockManager {
-    private static final Logger log = LoggerFactory.getLogger(SwipeLockManager.class);
-
-    @PersistenceContext
-    private EntityManager entityManager;
-
-    public SwipeLockManager() {
-    }
+    private final EntityManager entityManager;
 
     public SwipeLockManager(EntityManager entityManager) {
-        this.entityManager = entityManager;
+        this.entityManager = Objects.requireNonNull(entityManager, "entityManager");
     }
 
     /**
@@ -45,18 +39,15 @@ public class SwipeLockManager {
     /**
      * Lấy khóa transaction-level advisory lock trên PostgreSQL cho cặp (userId, targetId).
      * Khóa này tự động được giải phóng khi transaction commit hoặc rollback.
+     * A failed acquisition must propagate so the swipe transaction cannot continue without its lock.
      */
     public void acquirePairLock(long userId, long targetId) {
-        if (entityManager == null) {
-            return;
+        if (!entityManager.isJoinedToTransaction()) {
+            throw new TransactionRequiredException("Pair locks require an active database transaction");
         }
         long key = pairKey(userId, targetId);
-        try {
-            entityManager.createNativeQuery("SELECT 1 FROM (SELECT pg_advisory_xact_lock(:key)) t")
-                    .setParameter("key", key)
-                    .getSingleResult();
-        } catch (Exception e) {
-            log.debug("Advisory lock acquisition for pair key {}: {}", key, e.getMessage());
-        }
+        entityManager.createNativeQuery("SELECT 1 FROM (SELECT pg_advisory_xact_lock(:key)) t")
+                .setParameter("key", key)
+                .getSingleResult();
     }
 }

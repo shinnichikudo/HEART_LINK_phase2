@@ -9,15 +9,13 @@ import com.example.heartlink.repository.SwipeRepository;
 import com.example.heartlink.repository.UserRepository;
 import com.example.heartlink.swipe.dto.SwipeRequest;
 import com.example.heartlink.swipe.dto.SwipeResponse;
+import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
@@ -36,7 +34,7 @@ class SwipeConcurrencyTests {
 
     // Giả lập khóa logic theo cặp trong bộ nhớ cho test đa luồng
     private final ConcurrentHashMap<Long, Semaphore> inMemoryLocks = new ConcurrentHashMap<>();
-    private final SwipeLockManager mockLockManager = new SwipeLockManager() {
+    private final SwipeLockManager mockLockManager = new SwipeLockManager(mock(EntityManager.class)) {
         @Override
         public void acquirePairLock(long userId, long targetId) {
             long key = pairKey(userId, targetId);

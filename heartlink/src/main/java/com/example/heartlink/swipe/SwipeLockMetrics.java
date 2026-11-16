@@ -8,8 +8,9 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.LongAdder;
 
 /**
- * Đo lường và thống kê riêng thời gian chờ khóa (Lock Wait Time) của các thao tác swipe.
- * Cho phép phân tích định lượng thời gian chờ khóa trước khi quyết định cải tiến.
+ * Measures successful lock acquisition calls, including SQL round trips and execution time.
+ * Pair-lock measurements exclude the subsequent user reads; row-lock queries also load the users.
+ * These durations are not pure PostgreSQL lock wait time. Existing getter names remain compatible.
  */
 @Component
 public class SwipeLockMetrics {
@@ -28,9 +29,9 @@ public class SwipeLockMetrics {
 
         long waitMs = waitNanos / 1_000_000;
         if (waitMs > 50) {
-            log.warn("High swipe lock wait time: pair=({}, {}), wait={}ms", userA, userB, waitMs);
+            log.warn("Slow swipe lock acquisition: pair=({}, {}), duration={}ms", userA, userB, waitMs);
         } else {
-            log.debug("Swipe lock acquired: pair=({}, {}), wait={}ms", userA, userB, waitMs);
+            log.debug("Swipe lock acquired: pair=({}, {}), duration={}ms", userA, userB, waitMs);
         }
     }
 

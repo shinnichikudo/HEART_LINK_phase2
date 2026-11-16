@@ -17,8 +17,12 @@ import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.context.WebApplicationContext;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -33,6 +37,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "spring.datasource.url=jdbc:postgresql://localhost:55432/heartlink_test",
         "spring.datasource.username=postgres", "spring.datasource.password=test",
         "spring.jpa.hibernate.ddl-auto=create-drop",
+        "heartlink.swipe.lock-strategy=pair",
         "app.jwt.secret=phase1-test-secret-at-least-32-bytes-long"
 })
 class Phase1ApiTests {
@@ -42,6 +47,7 @@ class Phase1ApiTests {
     @Autowired UserRepository users;
     @Autowired SwipeService swipes;
     @Autowired JdbcTemplate jdbc;
+    @Autowired PlatformTransactionManager transactions;
     MockMvc mvc;
     Long a;
     Long b;
@@ -239,18 +245,62 @@ class Phase1ApiTests {
     }
 
     @Test
-    void hotProfileAllowsParallelSwipesFromDifferentUsers() throws Exception {
-        var gate = new CyclicBarrier(2);
-        try (var pool = Executors.newFixedThreadPool(2)) {
-            var first = pool.submit(() -> { gate.await(5, TimeUnit.SECONDS); return swipes.swipe(b, new SwipeRequest(a, "like")); });
-            var second = pool.submit(() -> { gate.await(5, TimeUnit.SECONDS); return swipes.swipe(c, new SwipeRequest(a, "like")); });
-            SwipeResponse x = first.get(15, TimeUnit.SECONDS);
-            SwipeResponse y = second.get(15, TimeUnit.SECONDS);
-            assertThat(x.matched()).isFalse();
-            assertThat(y.matched()).isFalse();
+    void heldPairLockBlocksReciprocalSwipeButAllowsOtherHotProfilePairs() throws Exception {
+        var firstWritten = new CountDownLatch(1);
+        var releaseFirst = new CountDownLatch(1);
+        var reciprocalBackend = new CompletableFuture<Integer>();
+        try (var pool = Executors.newFixedThreadPool(3)) {
+            var first = pool.submit(() -> new TransactionTemplate(transactions).execute(status -> {
+                var response = swipes.swipe(b, new SwipeRequest(a, "like"));
+                firstWritten.countDown();
+                try {
+                    assertThat(releaseFirst.await(15, TimeUnit.SECONDS)).isTrue();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException(e);
+                }
+                return response;
+            }));
+
+            java.util.concurrent.Future<SwipeResponse> reciprocal;
+            try {
+                assertThat(firstWritten.await(5, TimeUnit.SECONDS)).isTrue();
+                reciprocal = pool.submit(() -> new TransactionTemplate(transactions).execute(status -> {
+                    reciprocalBackend.complete(jdbc.queryForObject("select pg_backend_pid()", Integer.class));
+                    return swipes.swipe(a, new SwipeRequest(b, "like"));
+                }));
+                awaitAdvisoryLockWait(reciprocalBackend.get(5, TimeUnit.SECONDS));
+                assertThat(reciprocal.isDone()).isFalse();
+
+                // C -> A must finish while B -> A still holds its transaction and A -> B waits.
+                var independent = pool.submit(() -> swipes.swipe(c, new SwipeRequest(a, "like")));
+                assertThat(independent.get(5, TimeUnit.SECONDS).matched()).isFalse();
+                assertThat(first.isDone()).isFalse();
+                assertThat(reciprocal.isDone()).isFalse();
+            } finally {
+                releaseFirst.countDown();
+            }
+
+            assertThat(first.get(5, TimeUnit.SECONDS).matched()).isFalse();
+            assertThat(reciprocal.get(5, TimeUnit.SECONDS).matched()).isTrue();
         }
-        assertThat(count("swipes")).isEqualTo(2);
-        assertThat(swipes.getLockMetrics().getTotalSwipes()).isGreaterThanOrEqualTo(2);
+        assertThat(count("swipes")).isEqualTo(3);
+        assertThat(count("matches")).isEqualTo(1);
+        assertThat(count("notifications")).isEqualTo(2);
+    }
+
+    private void awaitAdvisoryLockWait(int backendPid) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+        do {
+            if (Boolean.TRUE.equals(jdbc.queryForObject("""
+                    select exists (select 1 from pg_locks
+                                   where pid = ? and locktype = 'advisory' and not granted)
+                    """, Boolean.class, backendPid))) {
+                return;
+            }
+            Thread.sleep(10);
+        } while (System.nanoTime() < deadline);
+        fail("Reciprocal swipe never waited on the held PostgreSQL advisory lock");
     }
 
     @Test

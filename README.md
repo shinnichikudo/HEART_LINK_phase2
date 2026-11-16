@@ -58,7 +58,7 @@ Database có 6 bảng: `users` (tài khoản), `swipes` (like/pass), `matches` (
 
 Hai yêu cầu kỹ thuật cần giữ khi sửa code:
 
-- **Không lưu dở dang luồng match:** swipe mới, match và hai thông báo cùng nằm trong transaction; lỗi làm rollback thì hoàn tác các thay đổi đó. Trước khi kiểm tra swipe, service khóa hai dòng user theo ID tăng dần để phối hợp các request đồng thời. Sự kiện SSE chỉ được gửi sau khi commit thành công.
+- **Không lưu dở dang luồng match:** swipe mới, match và hai thông báo cùng nằm trong transaction; lỗi làm rollback thì hoàn tác các thay đổi đó. Mã nguồn hiện mặc định lấy advisory lock theo cặp user, giữ đến khi transaction kết thúc: A–B và B–A dùng chung khóa, còn A–B và A–C dùng khóa khác nhau. Chế độ khóa hai dòng user theo ID tăng dần vẫn được giữ để đối chiếu Phase 1. Sự kiện SSE chỉ được gửi sau khi commit thành công.
 - **Không gửi tin sau khi hủy match:** thao tác gửi giữ khóa dòng match đến cuối transaction. Thao tác hủy cập nhật cùng dòng nên phải chờ nhau; nếu hủy hoàn tất trước thì gửi sau bị từ chối.
 
 ## 3. Luồng sử dụng và quy tắc nghiệp vụ
@@ -140,6 +140,8 @@ Lệnh thường dùng: `docker compose logs -f app` để xem log; `docker comp
 **Khi A swipe B mà không khóa lại 2 dòng dữ liệu thì có thể xảy ra tình trạng khi A và B cùng swipe nhau trong 1 thời điểm, khi kiểm tra đối phương chưa thích lại => sai lệch dữ liệu, sẽ không bao giờ vào được bảng matches. Nhóm đang chọn solution dễ nhất và đơn giản nhất là khóa theo dòng của các user, chính vì vậy nên cũng sẽ gây ra hiện tượng phải chờ nhả khóa mới có thể thực hiện được tiếp**
 
 **Các vấn đề đi sau là những vấn đề dễ thấy hơn, đọc để loại người đã thích, quá tải lượt swipe, nhiều tài nguyên cho chat, mất response hoặc là rate-limiting lượt quẹt**
+
+Mục 1 bên dưới mô tả hiện trạng Phase 1. Phần khóa theo cặp đã được triển khai trong mã nguồn hiện tại, chọn bằng `heartlink.swipe.lock-strategy=pair` (mặc định); dùng `row` để chạy lại cơ chế Phase 1. Cả hai cách gọi service swipe đều mở transaction; lỗi lấy khóa được truyền lên để dừng thao tác. `SwipeLockMetrics` đo thời gian thực hiện lời gọi lấy khóa, gồm chi phí SQL và round trip; ở chế độ `pair`, không tính hai truy vấn đọc user sau đó. Đây không phải số đo thuần thời gian chờ khóa bên trong PostgreSQL. Cần benchmark trên cùng dữ liệu và cấu hình trước khi kết luận mức cải thiện.
 
 
 | Hiện trạng Phase 1 | Hướng cải tiến cần xem xét |

@@ -71,6 +71,8 @@ public class SwipeService {
         return this.lockManager;
     }
 
+    // Both public entry points need a transaction: internal delegation bypasses the Spring proxy.
+    @Transactional(isolation = Isolation.READ_COMMITTED)
     public SwipeResponse swipe(Long userId, SwipeRequest request) {
         return swipe(userId, request, request.idempotencyKey());
     }
@@ -86,25 +88,25 @@ public class SwipeService {
             throw new ApiException(HttpStatus.BAD_REQUEST, "SELF_SWIPE", "Cannot swipe yourself");
         }
 
-        // Đo riêng thời gian chờ khóa (Lock Wait Time) trước khi tiến hành xử lý nghiệp vụ
-        long lockStart = System.nanoTime();
         User first;
         User second;
 
         if ("row".equalsIgnoreCase(lockStrategy)) {
             // Chiến lược cũ: Khóa theo dòng của từng user trong cặp theo thứ tự ID tăng dần
+            long lockStart = System.nanoTime();
             first = lockUserRow(Math.min(userId, targetId), userId);
             second = lockUserRow(Math.max(userId, targetId), userId);
+            lockMetrics.recordLockWait(userId, targetId, System.nanoTime() - lockStart);
         } else {
             // Chiến lược mới: Khóa theo cặp (Pair-level locking).
             // A-B và A-C chạy song song (2 cặp độc lập). A-B và B-A dùng chung một khóa cặp.
+            long lockStart = System.nanoTime();
             lockManager.acquirePairLock(userId, targetId);
+            // Exclude the separate user reads from pair-lock acquisition time.
+            lockMetrics.recordLockWait(userId, targetId, System.nanoTime() - lockStart);
             first = findUser(Math.min(userId, targetId), userId);
             second = findUser(Math.max(userId, targetId), userId);
         }
-
-        long lockWaitNs = System.nanoTime() - lockStart;
-        lockMetrics.recordLockWait(userId, targetId, lockWaitNs);
 
         User swiper = first.getId().equals(userId) ? first : second;
         User target = first.getId().equals(targetId) ? first : second;

@@ -9,6 +9,7 @@ import com.example.heartlink.match.MatchService;
 import com.example.heartlink.repository.SwipeRepository;
 import com.example.heartlink.repository.UserRepository;
 import com.example.heartlink.swipe.dto.SwipeRequest;
+import jakarta.persistence.PersistenceException;
 import org.junit.jupiter.api.Test;
 import java.util.Optional;
 import static org.assertj.core.api.Assertions.*;
@@ -166,6 +167,30 @@ class SwipeServiceTests {
         assertThat(lockMetrics.getTotalSwipes()).isEqualTo(1);
         assertThat(lockMetrics.getLastLockWaitMillis()).isGreaterThanOrEqualTo(0);
         assertThat(lockMetrics.getMaxLockWaitMillis()).isGreaterThanOrEqualTo(0);
+    }
+
+    @Test
+    void failedPairLockStopsSwipeBeforeReadingOrWritingBusinessData() {
+        var failure = new PersistenceException("Lock acquisition failed");
+        doThrow(failure).when(lockManager).acquirePairLock(1L, 2L);
+
+        assertThatThrownBy(() -> service.swipe(1L, new SwipeRequest(2L, "like"))).isSameAs(failure);
+
+        verifyNoInteractions(users, swipes, matches);
+        assertThat(lockMetrics.getTotalSwipes()).isZero();
+    }
+
+    @Test
+    void pairLockMetricIsFinishedBeforeUserProfilesAreLoaded() {
+        givenUsers();
+        when(users.findById(1L)).thenAnswer(invocation -> {
+            assertThat(lockMetrics.getTotalSwipes()).isEqualTo(1);
+            return Optional.of(User.builder().id(1L).build());
+        });
+
+        service.swipe(1L, new SwipeRequest(2L, "pass"));
+
+        assertThat(lockMetrics.getTotalSwipes()).isEqualTo(1);
     }
 
     @Test
