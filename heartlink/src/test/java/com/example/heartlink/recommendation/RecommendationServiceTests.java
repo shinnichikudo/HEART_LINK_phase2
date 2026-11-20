@@ -31,12 +31,12 @@ class RecommendationServiceTests {
     @Test
     void mapsPublicProfileAndSupportsEmptyList() {
         when(users.existsById(1L)).thenReturn(true);
-        when(users.findRecommendations(1L, PageRequest.of(0, 1))).thenReturn(List.of(
+        when(users.findRecommendations(1L, PageRequest.of(0, 2))).thenReturn(List.of(
                 User.builder().id(2L).name("Binh").bio("Hello").email("private@example.com").build()));
         var result = service.list(1L, 1);
         assertThat(result.items()).hasSize(1);
         assertThat(result.items().getFirst().id()).isEqualTo(2L);
-        when(users.findRecommendations(1L, PageRequest.of(0, 1))).thenReturn(List.of());
+        when(users.findRecommendations(1L, PageRequest.of(0, 2))).thenReturn(List.of());
         assertThat(service.list(1L, 1).items()).isEmpty();
     }
 }
