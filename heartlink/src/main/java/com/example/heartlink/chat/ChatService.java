@@ -47,6 +47,11 @@ public class ChatService {
     }
 
     @Transactional(readOnly = true)
+    public void requireActiveMatchParticipant(Long userId, Long matchId) {
+        requireUser(userId);
+        requireParticipant(matches.findById(matchId).orElseThrow(this::notFound), userId);
+    }
+    @Transactional(readOnly = true)
     public MessagePageResponse list(Long userId, Long matchId, int limit, Long before) {
         if (limit < 1 || limit > 50 || (before != null && before < 1)) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "Invalid limit or before cursor");
