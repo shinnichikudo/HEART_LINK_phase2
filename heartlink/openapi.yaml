@@ -266,6 +266,26 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+  /api/v1/matches/{matchId}/messages/stream:
+    get:
+      tags: [Chat]
+      summary: Subscribe to live messages for an active match
+      description: Sends message.created events after a message transaction commits. Event ID is the message ID; data matches the Message schema. Reconnect by reading message history.
+      parameters:
+        - in: path
+          name: matchId
+          required: true
+          schema: { type: integer, format: int64, minimum: 1 }
+      responses:
+        '200':
+          description: Authenticated Server-Sent Events stream
+          content:
+            text/event-stream:
+              schema: { type: string, description: message.created events containing Message JSON }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
   /api/v1/notifications:
     get:
       tags: [Notifications]
