@@ -25,6 +25,18 @@ public interface UserRepository extends JpaRepository<User, Long> {
             """)
     List<User> findRecommendations(@Param("userId") Long userId, Pageable pageable);
 
+    @Query("""
+            select u from User u
+            where u.id <> :userId
+              and u.id > :cursorId
+              and not exists (select s.id from Swipe s
+                              where s.swiper.id = :userId and s.target.id = u.id)
+            order by u.id
+            """)
+    List<User> findRecommendationsAfterId(@Param("userId") Long userId,
+                                          @Param("cursorId") Long cursorId,
+                                          Pageable pageable);
+
     /** Call in ascending ID order inside the swipe transaction. */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
     @Query("select u from User u where u.id = :id")
