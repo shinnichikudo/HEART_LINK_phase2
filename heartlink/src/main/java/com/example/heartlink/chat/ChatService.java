@@ -4,6 +4,7 @@ import com.example.heartlink.chat.dto.*;
 import com.example.heartlink.common.error.ApiException;
 import com.example.heartlink.entity.*;
 import com.example.heartlink.repository.*;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -16,12 +17,14 @@ public class ChatService {
     private final MessageRepository messages;
     private final UserRepository users;
     private final Clock clock;
+    private final ApplicationEventPublisher events;
 
-    public ChatService(MatchRepository matches, MessageRepository messages, UserRepository users, Clock clock) {
+    public ChatService(MatchRepository matches, MessageRepository messages, UserRepository users, Clock clock, ApplicationEventPublisher events) {
         this.matches = matches;
         this.messages = messages;
         this.users = users;
         this.clock = clock;
+        this.events = events;
     }
 
     @Transactional
@@ -36,7 +39,11 @@ public class ChatService {
         var sender = match.getUserA().getId().equals(userId) ? match.getUserA() : match.getUserB();
         var message = messages.saveAndFlush(Message.builder().match(match).sender(sender)
                 .content(request.content()).createdAt(clock.instant()).build());
-        return MessageResponse.from(message);
+        var response = MessageResponse.from(message);
+        var recipient = sender.getId().equals(match.getUserA().getId())
+                ? match.getUserB() : match.getUserA();
+        events.publishEvent(new MessageCreated(matchId, recipient.getId(), response));
+        return response;
     }
 
     @Transactional(readOnly = true)
