@@ -1,7 +1,11 @@
 package com.example.heartlink.chat;
 
 import com.example.heartlink.common.error.ApiException;
+import jakarta.annotation.PreDestroy;
+import org.springframework.context.event.ContextClosedEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.http.HttpStatus;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.event.TransactionalEventListener;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -32,11 +36,15 @@ public class ChatStream {
 
         var emitter = new SseEmitter(timeout);
         var connection = new Connection(matchId, userId, expiresAt, emitter);
+        emitter.onCompletion(() -> remove(connection));
+        emitter.onTimeout(() -> close(connection));
+        emitter.onError(error -> remove(connection));
         connections.compute(matchId, (id, current) -> {
             var clients = current == null ? ConcurrentHashMap.<Connection>newKeySet() : current;
             clients.add(connection);
             return clients;
         });
+        send(connection, SseEmitter.event().comment("connected").reconnectTime(3000));
         return emitter;
     }
 
@@ -49,25 +57,59 @@ public class ChatStream {
         }
         for (var connection : clients) {
             if (connection.userId().equals(event.recipientId())) {
-                sendMessage(connection, event);
+                send(connection, SseEmitter.event()
+                        .id(event.message().id().toString())
+                        .name("message.created")
+                        .data(event.message()));
             }
         }
     }
 
-    private void sendMessage(Connection connection, MessageCreated event) {
+    @Scheduled(fixedDelay = 15000)
+    public void heartbeat() {
+        connections.values().forEach(clients -> clients.forEach(connection ->
+                send(connection, SseEmitter.event().comment("heartbeat"))));
+    }
+
+    private void send(Connection connection, SseEmitter.SseEventBuilder event) {
+        if (!clock.instant().isBefore(connection.expiresAt())) {
+            close(connection);
+            return;
+        }
         try {
-            connection.emitter().send(SseEmitter.event()
-                    .id(event.message().id().toString())
-                    .name("message.created")
-                    .data(event.message()));
+            connection.emitter().send(event);
         } catch (IOException | IllegalStateException exception) {
             log.debug("Closing chat stream for user {}", connection.userId(), exception);
-            connection.emitter().completeWithError(exception);
+            close(connection);
         } catch (RuntimeException exception) {
             log.warn("Chat event delivery failed for user {}", connection.userId(), exception);
-            connection.emitter().completeWithError(exception);
+            close(connection);
         }
     }
+
+    private void remove(Connection connection) {
+        connections.computeIfPresent(connection.matchId(), (id, clients) -> {
+            clients.remove(connection);
+            return clients.isEmpty() ? null : clients;
+        });
+    }
+
+    private void close(Connection connection) {
+        remove(connection);
+        connection.emitter().complete();
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        connections.values().forEach(clients -> clients.forEach(this::close));
+    }
+
+    /** Close async requests before the web server begins its graceful-shutdown wait. */
+    @EventListener(ContextClosedEvent.class)
+    public void onContextClosed() {
+        shutdown();
+    }
+
     private record Connection(Long matchId, Long userId, Instant expiresAt, SseEmitter emitter) {
     }
 }
