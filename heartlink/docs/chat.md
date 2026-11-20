@@ -45,7 +45,9 @@ Tin mới nằm trước, sắp xếp theo ID giảm dần. Để lấy tin cũ,
 
 Cả hai API yêu cầu JWT và người dùng tồn tại. Người ngoài match nhận `403 MATCH_FORBIDDEN`; thành viên của match đã huỷ hoặc match không tồn tại nhận `404 MATCH_NOT_FOUND`. Huỷ match giữ lịch sử trong DB nhưng chặn gửi/đọc mới. Request đọc đã được chấp nhận trước khi unmatch có thể vẫn hoàn tất.
 
-Bản đầu dùng polling: khi mở chat gọi GET không có `before`, gọi lại định kỳ nếu cần và gộp kết quả theo ID. Chưa có realtime, đọc/đã xem, sửa/xoá tin hoặc gửi ảnh. Gửi lại POST tạo một tin nhắn mới; chưa có idempotency key. Client hiển thị nội dung dưới dạng text, không render thành HTML.
+Phase 2 thêm SSE để báo tin nhắn mới sớm hơn, giảm việc client gọi GET lặp lại khi chờ tin. Mở luồng bằng GET /api/v1/matches/{matchId}/messages/stream với Bearer JWT. Luồng gửi event message.created; ID event là ID tin nhắn và data có cùng cấu trúc với response gửi tin. Chỉ người nhận đang mở luồng nhận event; người gửi nhận tin trong response POST.
+
+GET lịch sử vẫn dùng để tải tin ban đầu và đồng bộ sau khi mất kết nối; server không phát lại event khi client offline. SSE chỉ đẩy tin sau khi transaction lưu thành công. Luồng đóng khi JWT hết hạn hoặc client ngắt kết nối. Kết nối hiện nằm trong bộ nhớ của một instance; nếu chạy nhiều instance, cần pub/sub dùng chung để chuyển event. Chưa có đọc/đã xem, sửa/xoá tin hoặc gửi ảnh. Gửi lại POST tạo tin nhắn mới; chưa có idempotency key. Client hiển thị nội dung dạng text, không render HTML.
 
 ## Kiểm tra
 
