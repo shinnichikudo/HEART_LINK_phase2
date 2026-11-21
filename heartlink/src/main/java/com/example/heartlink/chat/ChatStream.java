@@ -1,6 +1,7 @@
 package com.example.heartlink.chat;
 
 import com.example.heartlink.common.error.ApiException;
+import com.example.heartlink.match.MatchCancelled;
 import jakarta.annotation.PreDestroy;
 import org.springframework.context.event.ContextClosedEvent;
 import org.springframework.context.event.EventListener;
@@ -68,6 +69,14 @@ public class ChatStream {
         }
     }
 
+    /** Closes live chat streams after the match cancellation commits. */
+    @TransactionalEventListener
+    public void onMatchCancelled(MatchCancelled event) {
+        var clients = connections.remove(event.matchId());
+        if (clients != null) {
+            clients.forEach(this::close);
+        }
+    }
     @Scheduled(fixedDelay = 15000)
     public void heartbeat() {
         connections.values().forEach(clients -> clients.forEach(connection ->

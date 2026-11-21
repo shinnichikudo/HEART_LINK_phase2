@@ -1,6 +1,7 @@
 package com.example.heartlink.chat;
 
 import com.example.heartlink.chat.dto.MessageResponse;
+import com.example.heartlink.match.MatchCancelled;
 import org.junit.jupiter.api.Test;
 import org.springframework.transaction.event.TransactionPhase;
 import org.springframework.transaction.event.TransactionalEventListener;
@@ -47,12 +48,35 @@ class ChatStreamTests {
     }
 
     @Test
-    void messageListenerRunsAfterTransactionCommit() throws Exception {
-        var listener = ChatStream.class
+    void messageAndCancellationListenersRunAfterTransactionCommit() throws Exception {
+        var messageListener = ChatStream.class
                 .getMethod("onMessageCreated", MessageCreated.class)
                 .getAnnotation(TransactionalEventListener.class);
+        var cancellationListener = ChatStream.class
+                .getMethod("onMatchCancelled", MatchCancelled.class)
+                .getAnnotation(TransactionalEventListener.class);
 
-        assertThat(listener).isNotNull();
-        assertThat(listener.phase()).isEqualTo(TransactionPhase.AFTER_COMMIT);
+        assertThat(messageListener).isNotNull();
+        assertThat(messageListener.phase()).isEqualTo(TransactionPhase.AFTER_COMMIT);
+        assertThat(cancellationListener).isNotNull();
+        assertThat(cancellationListener.phase()).isEqualTo(TransactionPhase.AFTER_COMMIT);
+    }
+
+    @Test
+    void matchCancellationClosesEveryStreamForThatMatch() throws Exception {
+        var stream = new ChatStream(Clock.fixed(Instant.parse("2026-11-21T00:00:00Z"), ZoneOffset.UTC));
+        var firstClient = mock(SseEmitter.class);
+        var secondClient = mock(SseEmitter.class);
+        var otherMatchClient = mock(SseEmitter.class);
+        stream.register(42L, 1L, EXPIRES_AT, firstClient);
+        stream.register(42L, 2L, EXPIRES_AT, secondClient);
+        stream.register(43L, 1L, EXPIRES_AT, otherMatchClient);
+        clearInvocations(firstClient, secondClient, otherMatchClient);
+
+        stream.onMatchCancelled(new MatchCancelled(42L));
+
+        verify(firstClient).complete();
+        verify(secondClient).complete();
+        verify(otherMatchClient, never()).complete();
     }
 }

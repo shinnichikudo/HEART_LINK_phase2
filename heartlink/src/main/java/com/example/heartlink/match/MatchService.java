@@ -11,6 +11,7 @@ import com.example.heartlink.entity.User;
 import com.example.heartlink.notification.NotificationService;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -20,15 +21,17 @@ public class MatchService {
     private final MatchRepository matchRepository;
     private final UserRepository userRepository;
     private final NotificationService notificationService;
+    private final ApplicationEventPublisher events;
 
     @PersistenceContext
     private EntityManager entityManager;
 
     public MatchService(MatchRepository matchRepository, UserRepository userRepository,
-                        NotificationService notificationService) {
+                        NotificationService notificationService, ApplicationEventPublisher events) {
         this.matchRepository = matchRepository;
         this.userRepository = userRepository;
         this.notificationService = notificationService;
+        this.events = events;
     }
 
     /**
@@ -102,6 +105,7 @@ public class MatchService {
             throw new ApiException(HttpStatus.NOT_FOUND, "MATCH_NOT_FOUND",
                     "Active match was not found");
         }
+        events.publishEvent(new MatchCancelled(matchId));
     }
 
     private void requireUser(Long userId) {
