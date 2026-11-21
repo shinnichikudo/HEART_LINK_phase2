@@ -47,14 +47,14 @@ class ChatAccessTests {
         var userB = User.builder().id(USER_B_ID).email("b@example.com").name("B").build();
         activeMatch = Match.builder().id(MATCH_ID).userA(userA).userB(userB)
                 .status(MatchStatus.ACTIVE).build();
-        when(users.existsById(USER_A_ID)).thenReturn(true);
-        when(users.existsById(USER_B_ID)).thenReturn(true);
-        when(users.existsById(OUTSIDER_ID)).thenReturn(true);
-        when(matches.findById(MATCH_ID)).thenReturn(Optional.of(activeMatch));
     }
 
     @Test
     void activeMatchParticipantsMayOpenTheStream() {
+        when(users.existsById(USER_A_ID)).thenReturn(true);
+        when(users.existsById(USER_B_ID)).thenReturn(true);
+        when(matches.findById(MATCH_ID)).thenReturn(Optional.of(activeMatch));
+
         assertThatCode(() -> chat.requireActiveMatchParticipant(USER_A_ID, MATCH_ID))
                 .doesNotThrowAnyException();
         assertThatCode(() -> chat.requireActiveMatchParticipant(USER_B_ID, MATCH_ID))
@@ -63,6 +63,9 @@ class ChatAccessTests {
 
     @Test
     void outsiderCannotOpenTheStream() {
+        when(users.existsById(OUTSIDER_ID)).thenReturn(true);
+        when(matches.findById(MATCH_ID)).thenReturn(Optional.of(activeMatch));
+
         assertThatThrownBy(() -> chat.requireActiveMatchParticipant(OUTSIDER_ID, MATCH_ID))
                 .isInstanceOf(ApiException.class)
                 .satisfies(error -> org.assertj.core.api.Assertions.assertThat(((ApiException) error).getStatus())
@@ -72,6 +75,9 @@ class ChatAccessTests {
     @Test
     void cancelledMatchCannotOpenTheStream() {
         activeMatch.setStatus(MatchStatus.CANCELLED);
+        when(users.existsById(USER_A_ID)).thenReturn(true);
+        when(matches.findById(MATCH_ID)).thenReturn(Optional.of(activeMatch));
+
         assertThatThrownBy(() -> chat.requireActiveMatchParticipant(USER_A_ID, MATCH_ID))
                 .isInstanceOf(ApiException.class)
                 .satisfies(error -> org.assertj.core.api.Assertions.assertThat(((ApiException) error).getStatus())
@@ -80,7 +86,9 @@ class ChatAccessTests {
 
     @Test
     void missingMatchCannotOpenTheStream() {
+        when(users.existsById(USER_A_ID)).thenReturn(true);
         when(matches.findById(MATCH_ID)).thenReturn(Optional.empty());
+
         assertThatThrownBy(() -> chat.requireActiveMatchParticipant(USER_A_ID, MATCH_ID))
                 .isInstanceOf(ApiException.class)
                 .satisfies(error -> org.assertj.core.api.Assertions.assertThat(((ApiException) error).getStatus())

@@ -40,27 +40,30 @@ class ChatSendEventTests {
     @Mock ApplicationEventPublisher events;
 
     private ChatService chat;
+    private Match activeMatch;
+    private User sender;
 
     @BeforeEach
     void setUp() {
         chat = new ChatService(matches, messages, users,
                 Clock.fixed(Instant.parse("2026-11-21T00:00:00Z"), ZoneOffset.UTC), events);
-        var userA = User.builder().id(USER_A_ID).email("a@example.com").name("A").build();
-        var userB = User.builder().id(USER_B_ID).email("b@example.com").name("B").build();
-        var match = Match.builder().id(MATCH_ID).userA(userA).userB(userB)
+        sender = User.builder().id(USER_A_ID).email("a@example.com").name("A").build();
+        var recipient = User.builder().id(USER_B_ID).email("b@example.com").name("B").build();
+        activeMatch = Match.builder().id(MATCH_ID).userA(sender).userB(recipient)
                 .status(MatchStatus.ACTIVE).build();
 
         when(users.existsById(USER_A_ID)).thenReturn(true);
-        when(matches.findByIdForMessage(MATCH_ID)).thenReturn(Optional.of(match));
-        when(messages.saveAndFlush(any(Message.class))).thenAnswer(invocation -> {
-            var message = (Message) invocation.getArgument(0);
-            return Message.builder().id(100L).match(match).sender(userA)
-                    .content(message.getContent()).createdAt(message.getCreatedAt()).build();
-        });
+        when(matches.findByIdForMessage(MATCH_ID)).thenReturn(Optional.of(activeMatch));
     }
 
     @Test
     void publishesTheSavedMessageForTheOtherParticipant() {
+        when(messages.saveAndFlush(any(Message.class))).thenAnswer(invocation -> {
+            var message = (Message) invocation.getArgument(0);
+            return Message.builder().id(100L).match(activeMatch).sender(sender)
+                    .content(message.getContent()).createdAt(message.getCreatedAt()).build();
+        });
+
         var response = chat.send(USER_A_ID, MATCH_ID, new SendMessageRequest("Hello"));
 
         assertThat(response.id()).isEqualTo(100L);
