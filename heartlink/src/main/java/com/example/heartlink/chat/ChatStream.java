@@ -35,6 +35,11 @@ public class ChatStream {
         }
 
         var emitter = new SseEmitter(timeout);
+        register(matchId, userId, expiresAt, emitter);
+        return emitter;
+    }
+
+    void register(Long matchId, Long userId, Instant expiresAt, SseEmitter emitter) {
         var connection = new Connection(matchId, userId, expiresAt, emitter);
         emitter.onCompletion(() -> remove(connection));
         emitter.onTimeout(() -> close(connection));
@@ -45,9 +50,7 @@ public class ChatStream {
             return clients;
         });
         send(connection, SseEmitter.event().comment("connected").reconnectTime(3000));
-        return emitter;
     }
-
     /** Delivers a committed message only to the other participant of the match. */
     @TransactionalEventListener
     public void onMessageCreated(MessageCreated event) {
