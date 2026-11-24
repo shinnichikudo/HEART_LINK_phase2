@@ -28,7 +28,7 @@ public class RecommendationController {
     })
     public RecommendationResponse list(
             @Parameter(hidden = true) @RequestAttribute(CurrentUser.ID) Long userId,
-            @Parameter(description = "Từ 1 đến 50, mặc định 20") @RequestParam(defaultValue = "20") int limit) {
-        return service.list(userId, limit);
+            @Parameter(description = "Từ 1 đến 50, mặc định 20") @RequestParam(defaultValue = "20") int limit, @RequestParam(required = false) Long cursor) {
+        return service.list(userId, limit, cursor);
     }
 }
