@@ -39,7 +39,8 @@ public class RecommendationService {
                 : userRepository.findRecommendationsAfterId(userId, cursor, page);
         boolean hasMore = candidates.size() > limit;
         var profiles = candidates.stream().limit(limit)
-                .map(RecommendationResponse.Profile::from).toList();
+                .map(profile -> new RecommendationResponse.Profile(profile.getId(), profile.getName(), profile.getBio()))
+                .toList();
         Long nextCursor = hasMore ? profiles.getLast().id() : null;
         return new RecommendationResponse(profiles, nextCursor);
     }

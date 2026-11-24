@@ -17,25 +17,25 @@ public interface UserRepository extends JpaRepository<User, Long> {
     boolean existsByEmail(String email);
 
     @Query("""
-            select u from User u
+            select u.id as id, u.name as name, u.bio as bio from User u
             where u.id <> :userId
               and not exists (select s.id from Swipe s
                               where s.swiper.id = :userId and s.target.id = u.id)
             order by u.id
             """)
-    List<User> findRecommendations(@Param("userId") Long userId, Pageable pageable);
+    List<RecommendationProfileProjection> findRecommendations(@Param("userId") Long userId, Pageable pageable);
 
     @Query("""
-            select u from User u
+            select u.id as id, u.name as name, u.bio as bio from User u
             where u.id <> :userId
               and u.id > :cursorId
               and not exists (select s.id from Swipe s
                               where s.swiper.id = :userId and s.target.id = u.id)
             order by u.id
             """)
-    List<User> findRecommendationsAfterId(@Param("userId") Long userId,
-                                          @Param("cursorId") Long cursorId,
-                                          Pageable pageable);
+    List<RecommendationProfileProjection> findRecommendationsAfterId(@Param("userId") Long userId,
+                                                                     @Param("cursorId") Long cursorId,
+                                                                     Pageable pageable);
 
     /** Call in ascending ID order inside the swipe transaction. */
     @Lock(LockModeType.PESSIMISTIC_WRITE)
