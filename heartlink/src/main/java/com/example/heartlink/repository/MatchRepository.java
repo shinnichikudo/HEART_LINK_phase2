@@ -19,6 +19,8 @@ public interface MatchRepository extends JpaRepository<Match, Long> {
 
     boolean existsByIdAndStatus(Long id, MatchStatus status);
 
+    Optional<Match> findByUserAIdAndUserBId(Long userAId, Long userBId);
+
     @Modifying(clearAutomatically = true, flushAutomatically = true)
     @Query("""
             update Match m

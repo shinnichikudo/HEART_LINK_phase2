@@ -56,9 +56,11 @@ heartlink/
 
 Database có 6 bảng: `users` (tài khoản), `swipes` (like/pass), `matches` (cặp ghép đôi), `messages` (tin nhắn), `notifications` (thông báo), `refresh_tokens` (token đã hash).
 
+Mục 5 của Phase 2 bổ sung hai cột nullable trên `swipes`: `idempotency_key` và `response_match_id`, cùng unique constraint `(swiper_id, idempotency_key)`. Key và kết quả gốc được lưu trong cùng transaction với swipe, match và thông báo; lỗi sẽ rollback cả key. Cấu hình development `ddl-auto=update` cập nhật schema khi khởi động. Các swipe cũ không có key vẫn giữ nguyên dữ liệu và hành vi `409` khi quẹt lại.
+
 Hai yêu cầu kỹ thuật cần giữ khi sửa code:
 
-- **Không lưu dở dang luồng match:** swipe mới, match và hai thông báo cùng nằm trong transaction; lỗi làm rollback thì hoàn tác các thay đổi đó. Trước khi kiểm tra swipe, service khóa hai dòng user theo ID tăng dần để phối hợp các request đồng thời. Sự kiện SSE chỉ được gửi sau khi commit thành công.
+- **Không lưu dở dang luồng match:** swipe mới, match và hai thông báo cùng nằm trong transaction; lỗi làm rollback thì hoàn tác các thay đổi đó. Mã nguồn hiện mặc định lấy advisory lock theo cặp user, giữ đến khi transaction kết thúc: A–B và B–A dùng chung khóa, còn A–B và A–C dùng khóa khác nhau. Chế độ khóa hai dòng user theo ID tăng dần vẫn được giữ để đối chiếu Phase 1. Sự kiện SSE chỉ được gửi sau khi commit thành công.
 - **Không gửi tin sau khi hủy match:** thao tác gửi giữ khóa dòng match đến cuối transaction. Thao tác hủy cập nhật cùng dòng nên phải chờ nhau; nếu hủy hoàn tất trước thì gửi sau bị từ chối.
 
 ## 3. Luồng sử dụng và quy tắc nghiệp vụ
@@ -99,6 +101,23 @@ API dùng mã HTTP thông thường: `200/201` khi thành công, `204` khi hủy
 ```json
 { "error": { "code": "ALREADY_SWIPED", "message": "You have already swiped this user" } }
 ```
+
+Để gửi lại swipe khi mất phản hồi, client tạo key riêng cho mỗi lượt quẹt (ví dụ UUID) và gửi **ngay từ request đầu tiên**:
+
+```http
+POST /api/v1/swipes
+Authorization: Bearer <access_token>
+Idempotency-Key: swipe-request-001
+Content-Type: application/json
+
+{ "target_id": 2, "action": "like" }
+```
+
+- Cùng tài khoản, key, `target_id` và `action`: trả lại `201` với đúng `swipe_id`, `matched` và `match` của lần thành công đầu tiên; không ghi thêm swipe, match hoặc thông báo. Key được giữ cùng bản ghi swipe, không tự hết hạn.
+- Kết quả replay là kết quả tại thời điểm yêu cầu gốc. Nếu lần đầu chưa match rồi đối phương like lại, replay vẫn trả `matched: false`. Nếu lần đầu tạo match rồi match bị hủy, replay vẫn trả thông tin match gốc; dùng `GET /api/v1/matches` để xem match đang hoạt động.
+- Dùng lại key cho `target_id` hoặc `action` khác: `409 IDEMPOTENCY_KEY_REUSED`. Dùng key mới cho hồ sơ đã quẹt, kể cả swipe cũ chưa có key: `409 ALREADY_SWIPED`.
+- Key gồm 1–128 ký tự ASCII hiển thị, không có khoảng trắng. Có thể dùng trường body `idempotency_key` thay header; nếu gửi cả hai thì giá trị phải giống nhau. Key không hợp lệ hoặc hai nguồn khác nhau trả `400 VALIDATION_ERROR`. Các tài khoản khác nhau được dùng cùng giá trị key.
+- Không gửi key: giữ hành vi Phase 1, quẹt lại trả `409 ALREADY_SWIPED`. Cơ chế replay không còn được bật bằng cờ `heartlink.swipe.idempotent-replay`.
 
 Access token mặc định sống 1 giờ, refresh token sống 7 ngày. Database chỉ lưu hash của refresh token; mỗi lần refresh sẽ thu hồi token cũ. Logout thu hồi refresh token được gửi, còn access token đã phát vẫn dùng được tới lúc hết hạn.
 
@@ -141,6 +160,10 @@ Lệnh thường dùng: `docker compose logs -f app` để xem log; `docker comp
 
 **Các vấn đề đi sau là những vấn đề dễ thấy hơn, đọc để loại người đã thích, quá tải lượt swipe, nhiều tài nguyên cho chat, mất response hoặc là rate-limiting lượt quẹt**
 
+Mục 1 bên dưới mô tả hiện trạng Phase 1. Phần khóa theo cặp đã được triển khai trong mã nguồn hiện tại, chọn bằng `heartlink.swipe.lock-strategy=pair` (mặc định); dùng `row` để chạy lại cơ chế Phase 1. Cả hai cách gọi service swipe đều mở transaction; lỗi lấy khóa được truyền lên để dừng thao tác. `SwipeLockMetrics` đo thời gian thực hiện lời gọi lấy khóa, gồm chi phí SQL và round trip; ở chế độ `pair`, không tính hai truy vấn đọc user sau đó. Đây không phải số đo thuần thời gian chờ khóa bên trong PostgreSQL. Cần benchmark trên cùng dữ liệu và cấu hình trước khi kết luận mức cải thiện.
+
+Mục 5 cũng đã được triển khai theo hợp đồng retry ở phần API: lưu key theo tài khoản, ràng buộc với `target_id`/`action`, và giữ kết quả gốc. Khóa theo cặp xử lý các retry đồng thời cho cùng hồ sơ; unique constraint trên key chặn việc hai request ở hai cặp khác nhau cùng chiếm một key. Các mục trong bảng dưới đây tiếp tục mô tả hạn chế của Phase 1.
+
 
 | Hiện trạng Phase 1 | Hướng cải tiến cần xem xét |
 |---|---|
@@ -150,6 +173,8 @@ Lệnh thường dùng: `docker compose logs -f app` để xem log; `docker comp
 | **4. Chat tạo tải thừa khi không có tin mới.** Hiện backend chưa đẩy tin chat mới xuống client. Nếu client gọi lại API định kỳ để cập nhật cuộc trò chuyện, mỗi lần vẫn truy vấn và trả các tin gần nhất dù không ai nhắn thêm. Càng nhiều người mở chat thì càng nhiều request chỉ tải lại dữ liệu cũ. | Cải thiện cách cập nhật tin nhắn để giảm các lần gọi API và đọc database không cần thiết, đồng thời giúp người nhận thấy tin mới sớm hơn. Có thể đẩy tin mới qua kênh SSE hiện có (kết hợp pub/sub nếu chạy nhiều instance), hoặc giữ polling nhưng dùng ETag/304 Not Modified. |
 | **5. Mất phản hồi khiến người dùng không biết lượt thích đã thành công chưa.** Ví dụ B thích A, server đã lưu và tạo match nhưng phản hồi bị mất do mạng. Khi B gửi lại, Phase 1 trả `409 ALREADY_SWIPED` thay vì kết quả trước đó. Dữ liệu không bị tạo trùng nhưng client chưa nhận lại được kết quả thành công. | Cải thiện việc xử lý yêu cầu gửi lại khi mạng chập chờn, để người dùng nhận được kết quả lượt thích đã thực hiện mà không tạo thêm swipe hoặc match trùng, hoặc có thể sử dụng các idempotent endpoint/ idempotent key. |
 | **6. Chưa giới hạn tần suất để hạn chế spam/bot.** Ví dụ một tài khoản dùng bot để quẹt hàng nghìn hồ sơ hoặc gửi tin liên tục, làm tăng tải và ảnh hưởng người dùng khác. Phase 1 có JWT để xác định tài khoản nhưng chưa giới hạn số lần gọi API; bot có token hợp lệ vẫn gửi được request liên tục. | Bổ sung cơ chế hạn chế các thao tác quá dồn dập để giảm spam, bảo vệ tài nguyên hệ thống và tránh ảnh hưởng người dùng khác. Có thể giới hạn theo từng thao tác và từng user (ví dụ token bucket), trả 429 kèm Retry-After, đặt hạn mức swipe, và bổ sung phát hiện bot theo tín hiệu hành vi. |
+| **7. Ghi thông báo (Notification) đồng bộ bên trong Transaction của Swipe làm kéo dài thời gian giữ khóa.** Khi hai người bấm thích nhau (Mutual Like), hàm `createForMutualLike` không chỉ tạo bản ghi `matches` mà còn gọi đồng bộ `notificationService.recordMatchCreated(...)`, ép ghi (`saveAllAndFlush`) thêm 2 dòng vào bảng `notifications` và bắn event SSE trong cùng một Transaction với lượt Swipe. Việc gom các tác vụ thứ cấp vào chung transaction làm thời gian giữ khóa (Lock Holding Time) bị kéo dài. Khi bảng `notifications` phình to hoặc chịu tải cao, việc ghi thông báo bị chậm sẽ kéo tụt throughput của toàn bộ luồng quẹt và chiếm dụng connection pool lâu hơn. | **Tách rời (Decouple) tác vụ thông báo ra khỏi Transaction cốt lõi của Swipe:**<br>- Áp dụng mô hình bất đồng bộ (Asynchronous Event / Transactional Outbox hoặc `@TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)`): Transaction của swipe chỉ tập trung lưu `swipes` và `matches` rồi giải phóng khóa ngay lập tức.<br>- Việc tạo bản ghi thông báo và đẩy SSE cho client được thực hiện bất đồng bộ sau khi giao dịch chính đã commit thành công, giúp giảm thiểu thời gian chiếm giữ connection và lock DB. |
+| **8. Truy vấn danh sách Match (`GET /matches`) dùng điều kiện `OR` và `COUNT(*)` phân trang bằng `OFFSET` chậm dần theo thời gian.** Quan hệ match được lưu đối xứng (`user_a_id < user_b_id`). Do đó khi lấy danh sách match của một người, câu lệnh JPQL phải dùng `WHERE (m.userA.id = :userId OR m.userB.id = :userId)`. Điều kiện `OR` trên hai cột khiến PostgreSQL phải quét cả 2 index riêng biệt rồi gộp lại (`BitmapOr` + Sort). Nguy hiểm hơn, mỗi lần gọi API đều chạy câu truy vấn `select count(m)` trên toàn bộ bảng và phân trang bằng `setFirstResult((int) offset)`. Khi người dùng tích lũy hàng nghìn lượt match, việc đếm tổng và bỏ qua hàng trăm dòng cũ ở mỗi trang tạo ra gánh nặng I/O và CPU rất lớn cho DB. | **Tối ưu hóa truy vấn đối xứng và chuyển sang Cursor-based Pagination:**<br>- Bỏ phân trang `OFFSET` và câu lệnh `COUNT(*)` đắt đỏ; chuyển sang phân trang bằng con trỏ thời gian/ID (Cursor) tương tự như bảng Notifications hiện tại.<br>- Tối ưu câu lệnh truy vấn bằng cách tách thành `UNION ALL` trên 2 nhánh index riêng (`user_a` và `user_b`) để tận dụng triệt để index scan mà không bị chi phí sắp xếp/gộp của `OR`, hoặc thiết kế bảng phụ trợ định tuyến hai chiều (Symmetric routing table). |
 
 ## 7. Tài liệu và notebook benchmark
 
