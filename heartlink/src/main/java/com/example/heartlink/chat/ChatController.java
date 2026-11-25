@@ -53,12 +53,13 @@ public class ChatController {
     }
 
     @GetMapping
-    @Operation(summary = "Message history", description = "Newest ID first. Pass next_before as before to read older messages; omit before to refresh. Active match participants only.")
+    @Operation(summary = "Message history", description = "Newest ID first by default. Use before for older messages or after for missed newer messages; the cursors cannot be combined.")
     public MessagePageResponse list(
             @Parameter(hidden = true) @RequestAttribute(CurrentUser.ID) Long userId,
             @PathVariable @Min(1) Long matchId,
             @RequestParam(defaultValue = "20") int limit,
-            @RequestParam(required = false) Long before) {
-        return chat.list(userId, matchId, limit, before);
+            @RequestParam(required = false) Long before,
+            @RequestParam(required = false) Long after) {
+        return chat.list(userId, matchId, limit, before, after);
     }
 }

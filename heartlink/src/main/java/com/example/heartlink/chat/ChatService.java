@@ -52,21 +52,30 @@ public class ChatService {
         requireParticipant(matches.findById(matchId).orElseThrow(this::notFound), userId);
     }
     @Transactional(readOnly = true)
-    public MessagePageResponse list(Long userId, Long matchId, int limit, Long before) {
-        if (limit < 1 || limit > 50 || (before != null && before < 1)) {
-            throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR", "Invalid limit or before cursor");
+    public MessagePageResponse list(Long userId, Long matchId, int limit, Long before, Long after) {
+        if (limit < 1 || limit > 50 || (before != null && before < 1)
+                || (after != null && after < 1) || (before != null && after != null)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "VALIDATION_ERROR",
+                    "Use a valid limit and either before or after cursor");
         }
         requireUser(userId);
         requireParticipant(matches.findById(matchId).orElseThrow(this::notFound), userId);
-        // Fetch one extra row to determine whether older messages remain without a count query.
         var page = PageRequest.of(0, limit + 1);
+
+        if (after != null) {
+            var rows = messages.findByMatchIdAndIdGreaterThanOrderByIdAsc(matchId, after, page);
+            var items = rows.stream().limit(limit).map(MessageResponse::from).toList();
+            Long nextAfter = rows.size() > limit ? items.getLast().id() : null;
+            return new MessagePageResponse(items, null, nextAfter);
+        }
+
+        // Fetch one extra row to determine whether older messages remain without a count query.
         var rows = before == null ? messages.findByMatchIdOrderByIdDesc(matchId, page)
                 : messages.findByMatchIdAndIdLessThanOrderByIdDesc(matchId, before, page);
         var items = rows.stream().limit(limit).map(MessageResponse::from).toList();
         Long nextBefore = rows.size() > limit ? items.getLast().id() : null;
-        return new MessagePageResponse(items, nextBefore);
+        return new MessagePageResponse(items, nextBefore, null);
     }
-
     private void requireParticipant(Match match, Long userId) {
         if (!match.getUserA().getId().equals(userId) && !match.getUserB().getId().equals(userId)) {
             throw new ApiException(HttpStatus.FORBIDDEN, "MATCH_FORBIDDEN", "Only match participants can access messages");

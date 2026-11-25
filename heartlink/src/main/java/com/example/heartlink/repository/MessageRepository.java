@@ -8,4 +8,5 @@ import java.util.List;
 public interface MessageRepository extends JpaRepository<Message, Long> {
     List<Message> findByMatchIdOrderByIdDesc(Long matchId, Pageable pageable);
     List<Message> findByMatchIdAndIdLessThanOrderByIdDesc(Long matchId, Long before, Pageable pageable);
+    List<Message> findByMatchIdAndIdGreaterThanOrderByIdAsc(Long matchId, Long after, Pageable pageable);
 }
