@@ -31,7 +31,7 @@ public class ChatController {
 
     @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     @Operation(summary = "Live chat messages",
-            description = "Authenticated SSE for a match. Event name: message.created. Reconnect by loading message history.")
+            description = "Authenticated SSE for a match. Event name: message.created. After reconnecting, fetch missed messages with the history endpoint using after=lastSeenMessageId; deduplicate by message ID.")
     public ResponseEntity<SseEmitter> stream(
             @Parameter(hidden = true) @RequestAttribute(CurrentUser.ID) Long userId,
             @Parameter(hidden = true) @RequestAttribute(CurrentUser.EXPIRES_AT) Instant expiresAt,

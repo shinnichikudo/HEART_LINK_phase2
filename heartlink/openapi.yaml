@@ -241,7 +241,7 @@ paths:
     get:
       tags: [Chat]
       summary: Read message history of an active match
-      description: Newest ID first. Pass next_before as before for older messages. Omit before to refresh the latest page. A null next_before means no older page. Only active match participants can read history.
+      Newest ID first by default. Use before=next_before to page backward through older messages. After an SSE disconnect, reconnect to the stream, then use after=<lastSeenMessageId> to read missed messages in ascending ID order; continue with next_after until it is null. Deduplicate messages by ID because SSE and catch-up may overlap. before and after cannot be combined. Only active match participants can read history.
       parameters:
         - in: query
           name: limit
@@ -256,7 +256,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [items, next_before]
+                required: [items, next_before, next_after]
                 properties:
                   items:
                     type: array
@@ -270,7 +270,7 @@ paths:
     get:
       tags: [Chat]
       summary: Subscribe to live messages for an active match
-      description: Sends message.created events after a message transaction commits. Event ID is the message ID; data matches the Message schema. Reconnect by reading message history.
+      Sends message.created events after a message transaction commits. Event ID is the message ID; data matches the Message schema. After reconnecting, read missed messages with the history endpoint using after=<lastSeenMessageId>.
       parameters:
         - in: path
           name: matchId
