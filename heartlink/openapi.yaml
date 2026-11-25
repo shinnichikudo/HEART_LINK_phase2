@@ -241,13 +241,23 @@ paths:
     get:
       tags: [Chat]
       summary: Read message history of an active match
-      Newest ID first by default. Use before=next_before to page backward through older messages. After an SSE disconnect, reconnect to the stream, then use after=<lastSeenMessageId> to read missed messages in ascending ID order; continue with next_after until it is null. Deduplicate messages by ID because SSE and catch-up may overlap. before and after cannot be combined. Only active match participants can read history.
+      description: >-
+        Newest ID first by default. Use before=next_before to page backward through older messages.
+        After an SSE disconnect, reconnect to the stream, then use after=lastSeenMessageId to read
+        missed messages in ascending ID order; continue with next_after until it is null. Deduplicate
+        messages by ID because SSE and catch-up may overlap. before and after cannot be combined.
+        Only active match participants can read history.
       parameters:
         - in: query
           name: limit
           schema: { type: integer, default: 20, minimum: 1, maximum: 50 }
         - in: query
           name: before
+          description: Fetch older messages in descending ID order. Cannot be combined with after.
+          schema: { type: integer, format: int64, minimum: 1 }
+        - in: query
+          name: after
+          description: Fetch missed newer messages in ascending ID order. Cannot be combined with before.
           schema: { type: integer, format: int64, minimum: 1 }
       responses:
         '200':
@@ -262,6 +272,7 @@ paths:
                     type: array
                     items: { $ref: '#/components/schemas/Message' }
                   next_before: { type: integer, format: int64, nullable: true }
+                  next_after: { type: integer, format: int64, nullable: true }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
