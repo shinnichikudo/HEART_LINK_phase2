@@ -27,7 +27,7 @@ import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.any;`nimport static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -59,7 +59,7 @@ class ChatHistoryCursorTests {
     @Test
     void afterReturnsNewMessagesInAscendingOrderAndNextCursor() {
         allowParticipantToRead();
-        when(messages.findByMatchIdAndIdGreaterThanOrderByIdAsc(MATCH_ID, 10L, any(Pageable.class)))
+        when(messages.findByMatchIdAndIdGreaterThanOrderByIdAsc(eq(MATCH_ID), eq(10L), any(Pageable.class)))
                 .thenReturn(List.of(message(11L), message(12L), message(13L)));
 
         MessagePageResponse page = chat.list(USER_ID, MATCH_ID, 2, null, 10L);
@@ -72,7 +72,7 @@ class ChatHistoryCursorTests {
     @Test
     void beforeStillReturnsOlderMessagesInDescendingOrder() {
         allowParticipantToRead();
-        when(messages.findByMatchIdAndIdLessThanOrderByIdDesc(MATCH_ID, 10L, any(Pageable.class)))
+        when(messages.findByMatchIdAndIdLessThanOrderByIdDesc(eq(MATCH_ID), eq(10L), any(Pageable.class)))
                 .thenReturn(List.of(message(9L), message(8L), message(7L)));
 
         MessagePageResponse page = chat.list(USER_ID, MATCH_ID, 2, 10L, null);
@@ -95,7 +95,7 @@ class ChatHistoryCursorTests {
     @Test
     void afterWithoutMoreMessagesHasNoNextCursor() {
         allowParticipantToRead();
-        when(messages.findByMatchIdAndIdGreaterThanOrderByIdAsc(MATCH_ID, 10L, any(Pageable.class)))
+        when(messages.findByMatchIdAndIdGreaterThanOrderByIdAsc(eq(MATCH_ID), eq(10L), any(Pageable.class)))
                 .thenReturn(List.of(message(11L), message(12L)));
 
         MessagePageResponse page = chat.list(USER_ID, MATCH_ID, 2, null, 10L);
