@@ -281,7 +281,10 @@ paths:
     get:
       tags: [Chat]
       summary: Subscribe to live messages for an active match
-      Sends message.created events after a message transaction commits. Event ID is the message ID; data matches the Message schema. After reconnecting, read missed messages with the history endpoint using after=<lastSeenMessageId>.
+      description: >-
+        Sends message.created events after a message transaction commits. Event ID is the message ID;
+        data matches the Message schema. After reconnecting, read missed messages with the history
+        endpoint using after=lastSeenMessageId.
       parameters:
         - in: path
           name: matchId
