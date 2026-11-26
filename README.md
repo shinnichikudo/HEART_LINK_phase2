@@ -87,7 +87,7 @@ Các API nghiệp vụ cần header `Authorization: Bearer <access_token>`, ngo�
 | `POST /api/v1/auth/logout` | Thu hồi refresh token được gửi lên |
 | `GET /api/v1/users/me` | Xem hồ sơ của mình |
 | `PATCH /api/v1/users/me` | Sửa tên, giới thiệu; `bio: null` để xóa giới thiệu |
-| `GET /api/v1/recommendations?limit=20` | Lấy hồ sơ chưa quẹt |
+| `GET /api/v1/recommendations?limit=20&cursor={next_cursor}` | Lấy hồ sơ chưa quẹt; bỏ `cursor` ở trang đầu, dùng `next_cursor` để lấy trang tiếp |
 | `POST /api/v1/swipes` | Gửi `{ "target_id": 2, "action": "like" }` hoặc `pass` |
 | `GET /api/v1/matches?limit=20&offset=0` | Xem các match đang hoạt động |
 | `DELETE /api/v1/matches/{id}` | Hủy match |
