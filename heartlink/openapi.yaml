@@ -121,6 +121,7 @@ paths:
                     items: { $ref: '#/components/schemas/Profile' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/swipes:
     post:
       tags: [Swipes]
@@ -176,6 +177,7 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ApiError' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/matches:
     get:
       tags: [Matches]
@@ -238,6 +240,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
     get:
       tags: [Chat]
       summary: Read message history of an active match
@@ -277,6 +280,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '429': { $ref: '#/components/responses/TooManyRequests' }
   /api/v1/matches/{matchId}/messages/stream:
     get:
       tags: [Chat]
@@ -413,6 +417,15 @@ components:
           schema: { $ref: '#/components/schemas/ApiError' }
     NotFound:
       description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ApiError' }
+    TooManyRequests:
+      description: Rate limit exceeded; retry after the specified number of seconds
+      headers:
+        Retry-After:
+          description: Number of seconds to wait before retrying
+          schema: { type: integer, minimum: 1 }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ApiError' }
